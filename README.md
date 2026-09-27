@@ -129,3 +129,5 @@ gh workflow run neon-usage.yml -R thebluepigu/simparty-monitor                  
 
 ⚠️ cron 문자열은 여러 곳이 같아야 합니다. full `4 2-14 * * *` 은 `uptime.yml` 의 `on.schedule`·`run-name`·
 `uptime-mode.sh` 의 `FULL_CRON` 세 곳, quick 두 줄은 `on.schedule` 과 `QUICK_CRONS` 가 같아야 합니다.
+
+> 첫 스케줄 실행 확인용 push: 2026-09-27 22:15 KST (schedule 은 기본 브랜치 push 이후 활성화되는 경우가 있음)
