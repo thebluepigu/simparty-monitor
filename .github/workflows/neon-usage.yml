@@ -104,9 +104,9 @@ jobs:
 
       - name: Neon 사용량 조회 + 텔레그램 브리프
         env:
-          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          NEON_API_KEY: ${{ secrets.SIMPARTY_NEON_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.SIMPARTY_TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.SIMPARTY_TELEGRAM_CHAT_ID }}
           NEON_PROJECT_ID: ${{ vars.NEON_PROJECT_ID }}
           NEON_CU_HOUR_USD: ${{ vars.NEON_CU_HOUR_USD || '0.106' }}
           NEON_STORAGE_GB_USD: ${{ vars.NEON_STORAGE_GB_USD || '0.35' }}
@@ -138,8 +138,8 @@ jobs:
         id: selffail
         if: failure() || cancelled()
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.SIMPARTY_TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.SIMPARTY_TELEGRAM_CHAT_ID }}
         run: |
           now="$(date -u +%s)"
           last="$(cat .selffail/last 2>/dev/null || echo 0)"

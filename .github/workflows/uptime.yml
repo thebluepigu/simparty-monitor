@@ -119,8 +119,8 @@ jobs:
         env:
           MODE: ${{ steps.mode.outputs.mode }}
           SELFFAIL_DIR: .selffail
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.SIMPARTY_TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.SIMPARTY_TELEGRAM_CHAT_ID }}
         run: bash .github/scripts/uptime.sh "$MODE"
 
       # ---- 감시 자체 실패: 텔레그램 6시간에 1건 (영구 고장 시 10분마다 알림 폭주 방지) ----
@@ -129,8 +129,8 @@ jobs:
         if: failure() || cancelled()
         env:
           MODE: ${{ steps.mode.outputs.mode }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.SIMPARTY_TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.SIMPARTY_TELEGRAM_CHAT_ID }}
         run: |
           # 체크아웃 실패에도 동작하도록 lib 없이 인라인. 토큰은 stdin 설정으로만 전달.
           if [ -e "$RUNNER_TEMP/monitor_outage_alerted" ]; then

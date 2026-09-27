@@ -54,9 +54,9 @@ Settings → Secrets and variables → Actions → **Secrets** 에 등록합니�
 
 | Secret | 용도 |
 |---|---|
-| `TELEGRAM_BOT_TOKEN` | 알림을 보내는 텔레그램 봇 토큰 |
-| `TELEGRAM_CHAT_ID` | 알림을 받을 채팅(그룹) id |
-| `NEON_API_KEY` | Neon control plane API 조회용 키 (`neon-usage.yml`) |
+| `SIMPARTY_TELEGRAM_BOT_TOKEN` | 알림을 보내는 텔레그램 봇 토큰 |
+| `SIMPARTY_TELEGRAM_CHAT_ID` | 알림을 받을 채팅(그룹) id |
+| `SIMPARTY_NEON_API_KEY` | Neon control plane API 조회용 키 (`neon-usage.yml`) |
 
 선택 **Variables**(없으면 기본값): `NEON_PROJECT_ID`(없으면 이름 `simparty` 로 검색), `NEON_BUDGET_USD`(15),
 `NEON_CU_HOUR_USD`(0.106), `NEON_STORAGE_GB_USD`(0.35), `NEON_MIN_CU`(0.25), `REPO_IDLE_WARN_DAYS`(45).
