@@ -1,0 +1,172 @@
+name: Neon 사용량 일일 브리프
+
+# 목적: 매일 KST 09:17 Neon 프로젝트 'simparty' 의 현재 결제기간 소비량을 텔레그램으로 보고한다.
+#       2026-09 장애(autosuspend 가 한 번도 안 일어나 Free 100 CU-h 를 16.7일에 소진 → prod 6일 다운)의
+#       조기 경보가 목적.
+#
+# 조회는 Neon control plane API(console.neon.tech/api/v2) 만 쓴다 — DB 에 접속하지 않으므로 compute 를
+#   깨우지 않는다(consumption API 는 문서에 "does not wake computes" 명시). 누적값 갱신이 ~15분 주기라
+#   하루 1회면 충분하다.
+#
+# 시각: UTC 00:17 (KST 09:17). 정각(00:00)은 GitHub 스케줄 지연·드롭이 잦고 Neon 결제기간 경계(월초 00:00Z)와
+#   겹쳐 몇 분치 사용량을 외삽하는 오경보가 난다 → 17분으로 비킨다(기간 시작 1일 미만은 외삽 자체도 생략).
+#
+# 브리프(6줄): CU-h 누적/기간말 예상 · 예상 $ · 전송량·스토리지·감시 heartbeat(uptime·DB체크) · autosuspend 판정 ·
+#   저장소 마지막 커밋 N일 전.
+# 경보(첫 줄 이모지):
+#   🔴 autosuspend 미작동 의심 — 아래 둘 중 하나라도 ≥ 90%
+#      (a) 최근 24시간 중 "내내 켜져 있던" 시간 비율 (v2 hourly compute_unit_seconds ≥ 0.9×최소CU×3600, 프로젝트 합계)
+#      (b) 직전 실행 대비 기본 브랜치 active_time_seconds 증가분 / 경과시간 (직전값은 actions/cache,
+#          첫 실행·간격 20시간 미만(수동 실행 등)은 생략하고 기준점도 유지. 기본 브랜치 값이 없으면 프로젝트 합계로
+#          대체하고 문구에 명시)
+#   ⚠️ 기간말 예상 비용 > vars.NEON_BUDGET_USD (기본 $15), 또는 uptime.yml 마지막 성공 실행이 2시간 넘게 전,
+#      또는 DB 경유(full) 체크 마지막 성공이 14시간 넘게 전(정상 간격 ~10h: KST 23:04 → 09:17)
+#      (감시 워크플로 자체가 멈추거나 full 이 영영 강등되는 것을 여기서 드러낸다 — heartbeat),
+#      또는 저장소 마지막 커밋이 45일(REPO_IDLE_WARN_DAYS) 이상 전 — 공개 repo 는 60일 무활동이면 GitHub 가 schedule 을
+#      자동 비활성화한다. 자동 빈 커밋(keepalive)은 GitHub 가 약관 위반으로 막은 전례가 있어 쓰지 않고, 사람이 사소한
+#      커밋 1건을 하도록 여기서 알린다(README '60일 규칙' 참고).
+#   시간별 데이터가 비면 "0/24 정상" 으로 읽지 않고 "데이터 없음 — 판정 불가" 로 표시.
+# CU-h: consumption_history v2 compute_unit_seconds(요금 기준, Launch 이상·org_id 필요) 우선,
+#       불가하면 compute_time_seconds/3600 근사치("≈" 표기).
+# 조정 가능한 repo variables(없으면 기본값): NEON_PROJECT_ID, NEON_CU_HOUR_USD(0.106),
+#   NEON_STORAGE_GB_USD(0.35), NEON_BUDGET_USD(15), NEON_MIN_CU(0.25), REPO_IDLE_WARN_DAYS(45).
+# 주의: schedule 은 기본 브랜치(main)에 있는 파일만 실행된다.
+
+on:
+  schedule:
+    - cron: '17 0 * * *'   # UTC 00:17 = KST 09:17
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read     # uptime.yml 마지막 성공 실행 조회(heartbeat)
+
+concurrency:
+  group: neon-usage
+  cancel-in-progress: false
+
+jobs:
+  neon-usage:
+    runs-on: ubuntu-latest
+    # Neon 호출 최대 ~6회 × (30s + 5s + 30s) 최악 → 5분은 빠듯
+    timeout-minutes: 8
+    env:
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      STATE_DIR: .monitor-state
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+
+      - name: 직전 상태 복원
+        uses: actions/cache/restore@v4
+        with:
+          path: .monitor-state
+          key: neon-usage-state-${{ github.run_id }}
+          restore-keys: neon-usage-state-
+
+      - name: uptime 감시 heartbeat 조회
+        id: hb
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # 실패해도 브리프는 보낸다 — 값이 비면 브리프에 "성공 기록 없음 ⚠️" 로 표시
+          last="$(gh run list --workflow uptime.yml --status success --limit 1 --json createdAt -q '.[0].createdAt // ""' 2>/dev/null || true)"
+          echo "uptime.yml 마지막 성공: ${last:-없음}"
+          echo "last=${last}" >> "$GITHUB_OUTPUT"
+          # DB 경유(full) 체크 heartbeat: full '의도' run(displayTitle '· full') 최신 8건 중 'DB 경유(full) 실행 표식'
+          # 스텝과 체크 스텝이 둘 다 success 인 가장 최근 run 의 체크 완료 시각 (스텝 이름은 uptime.yml 과 동기)
+          full=""
+          # limit: 10분 주기면 KST 23:04(마지막 full) → 09:17 사이에만 quick ~61회 → 60 이면 full 을 못 찾는다. 200 ≈ 33시간
+          ids="$(gh run list --workflow uptime.yml --limit 200 --json databaseId,displayTitle -q '.[] | select((.displayTitle // "") | endswith("· full")) | .databaseId' 2>/dev/null | head -n 8 || true)"
+          for id in $ids; do
+            t="$(gh run view "$id" --json jobs -q '[.jobs[]?.steps[]?] as $s
+                  | if any($s[]; .name == "DB 경유(full) 실행 표식" and .conclusion == "success")
+                    then ([$s[] | select(.name == "업타임 체크 + 장애 이슈/텔레그램" and .conclusion == "success") | .completedAt] | .[0] // "")
+                    else "" end' 2>/dev/null || true)"
+            if [ -n "$t" ] && [ "$t" != "null" ]; then full="$t"; break; fi
+          done
+          echo "uptime.yml DB체크(full) 마지막 성공: ${full:-없음}"
+          echo "full=${full}" >> "$GITHUB_OUTPUT"
+          # 저장소 마지막 커밋 시각(epoch) — 공개 repo 60일 무활동 스케줄 자동 비활성 조기 경보용.
+          # checkout(fetch-depth 기본 1 = 얕은 체크아웃)도 HEAD 커밋 객체는 있으므로 git log -1 로 충분하다.
+          # 스케줄 run 의 HEAD = 기본 브랜치 최신 커밋. 실패하면 REST(커밋 목록 1건)로 대체, 둘 다 실패하면 빈 값 → 브리프 ⚠️
+          lc="$(git log -1 --format=%ct 2>/dev/null || true)"
+          if [ -z "$lc" ]; then
+            iso="$(gh api "repos/${GH_REPO}/commits?per_page=1" --jq '.[0].commit.committer.date // ""' 2>/dev/null || true)"
+            [ -z "$iso" ] || lc="$(date -u -d "$iso" +%s 2>/dev/null || true)"
+          fi
+          case "$lc" in ''|*[!0-9]*) lc="" ;; esac
+          echo "저장소 마지막 커밋(epoch): ${lc:-확인 불가}"
+          echo "last_commit=${lc}" >> "$GITHUB_OUTPUT"
+
+      - name: Neon 사용량 조회 + 텔레그램 브리프
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          NEON_PROJECT_ID: ${{ vars.NEON_PROJECT_ID }}
+          NEON_CU_HOUR_USD: ${{ vars.NEON_CU_HOUR_USD || '0.106' }}
+          NEON_STORAGE_GB_USD: ${{ vars.NEON_STORAGE_GB_USD || '0.35' }}
+          NEON_BUDGET_USD: ${{ vars.NEON_BUDGET_USD || '15' }}
+          NEON_MIN_CU: ${{ vars.NEON_MIN_CU || '0.25' }}
+          UPTIME_LAST_SUCCESS: ${{ steps.hb.outputs.last }}
+          UPTIME_LAST_FULL: ${{ steps.hb.outputs.full }}
+          REPO_LAST_COMMIT_EPOCH: ${{ steps.hb.outputs.last_commit }}
+          REPO_IDLE_WARN_DAYS: ${{ vars.REPO_IDLE_WARN_DAYS || '45' }}
+        run: bash .github/scripts/neon-usage.sh
+
+      - name: 상태 저장
+        if: always() && hashFiles('.monitor-state/neon-state.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: .monitor-state
+          key: neon-usage-state-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # ---- 감시 자체 실패: 텔레그램 6시간에 1건 ----
+      - name: 감시 실패 알림 — 직전 전송 시각 복원
+        if: failure() || cancelled()
+        uses: actions/cache/restore@v4
+        with:
+          path: .selffail
+          key: neon-selffail-${{ github.run_id }}
+          restore-keys: neon-selffail-
+
+      - name: 감시 자체 실패 알림
+        id: selffail
+        if: failure() || cancelled()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          now="$(date -u +%s)"
+          last="$(cat .selffail/last 2>/dev/null || echo 0)"
+          case "$last" in ''|*[!0-9]*) last=0 ;; esac
+          if [ $((now - last)) -lt 21600 ]; then
+            echo "::warning::직전 감시 실패 알림 후 6시간 미만 — 텔레그램 생략 (GitHub 실패 메일은 발송됨)"; exit 0
+          fi
+          reason="$(tail -n 5 "$RUNNER_TEMP/monitor_fail_reason" 2>/dev/null || true)"
+          text="⚠️ 감시 자체 실패: neon-usage
+          ${reason}
+          ${RUN_URL}"
+          if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
+            echo "::error::텔레그램 시크릿 없음 — GitHub 실패 메일만 발송됨"; exit 0
+          fi
+          http="$(printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TELEGRAM_BOT_TOKEN" \
+            | curl -sS -K - -X POST --max-time 20 -o /dev/null -w '%{http_code}' \
+                --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" --data-urlencode "text=${text:0:4000}")" || http="000"
+          echo "telegram HTTP ${http}"
+          if [ "$http" = "200" ]; then
+            mkdir -p .selffail && echo "$now" > .selffail/last && echo "saved=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::감시 실패 알림 전송도 실패"
+          fi
+
+      - name: 감시 실패 알림 — 전송 시각 저장
+        if: (failure() || cancelled()) && steps.selffail.outputs.saved == '1'
+        uses: actions/cache/save@v4
+        with:
+          path: .selffail
+          key: neon-selffail-${{ github.run_id }}-${{ github.run_attempt }}

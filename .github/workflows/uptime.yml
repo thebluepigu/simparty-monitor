@@ -1,0 +1,167 @@
+name: 업타임 감시 (liveness·robots / 정밀 시간당)
+run-name: "uptime · ${{ github.event_name == 'workflow_dispatch' && inputs.mode || (github.event.schedule == '4 2-14 * * *' && 'full' || 'quick') }}"
+
+# 목적: simparty BE(Fly)·FE(Cloudflare Pages) 다운을 텔레그램으로 알린다. 2026-09-19~25 prod 6일 다운을
+#       아무도 몰랐던 사고의 재발 방지. 상태는 GitHub Issue(label 'uptime-incident', open = 장애 중)로 관리.
+#
+# 🔴 왜 DB 를 건드리는 체크는 시간당 1회·영업시간에만 하나:
+#   Neon compute 는 5분 무요청이면 autosuspend(scale-to-zero) 된다. 감시가 그보다 자주 DB 를 깨우면
+#   compute 가 한 번도 안 잠들고 CU-h 가 24시간 과금된다 — 직전 장애(Free 100 CU-h 16.7일 소진)의 원인을
+#   감시가 다시 만드는 셈. 그래서
+#     quick (DB 미경유): /actuator/health/liveness(DB 미포함) + simparty.shop/robots.txt(Nitro 라우트, BE 호출 없음,
+#                         엣지 캐시를 비키는 쿼리 부착 → 오리진까지 확인)
+#     full  (DB 경유)  : quick + /actuator/health/readiness(DB 포함) + /simparty/categories + SSR 홈
+#                         → UTC 02~14시 매시 04분 = KST 11:04~23:04, 하루 13회만
+#   full 은 cron 외에도 '모드 결정'(.github/scripts/uptime-mode.sh)이 강제한다: UTC 02~14시 밖이면(스케줄 지연 포함)
+#   quick 으로 강등, 재실행(run_attempt>1)이면 강등, 스케줄·수동 불문 최근 45분 안에 DB 체크를 실제로 실행한
+#   다른 run('DB 경유(full) 실행 표식' 스텝 success, 또는 재실행돼 1차 시도를 확인할 수 없는 run)이 있으면 강등.
+#   ⚠️ full cron 문자열 '4 2-14 * * *' 은 on.schedule·run-name·uptime-mode.sh(FULL_CRON) 3곳이 같아야 한다.
+#      어긋나 full 이 안 돌면 neon-usage 브리프의 "DB체크 N시간 전 ⚠️" heartbeat 로 드러난다.
+#   /actuator/health (DB 포함 전체 헬스)는 감시에 쓰지 않는다.
+#
+# 주기: 10분 (매시 04·14·24·34·44·54분, 시간당 6회 = 하루 144회). 이 repo 는 감시 코드만 둔 **공개 repo** 라
+#   GitHub-hosted 표준 러너 분이 무제한이다. (예전 private BE repo 에선 월 2,000분 한도 때문에 30분 주기였고,
+#   cron 지연·드롭으로 실측 간격이 60~110분까지 벌어졌다 → 공개 repo 로 분리하면서 10분으로 올림.)
+#   cron 3줄은 서로 겹치지 않는다:
+#     quick '14,24,34,44,54 * * * *'  — 매시 14·24·34·44·54분 (하루 120회)
+#     quick '4 0-1,15-23 * * *'       — 영업시간 외 04분 슬롯 (하루 11회)
+#     full  '4 2-14 * * *'            — 영업시간 04분 슬롯 = 시간당 1회 DB 경유 (하루 13회)
+#   ⚠️ quick cron 2줄은 uptime-mode.sh 의 QUICK_CRONS 와도 같아야 한다(어긋나면 "알 수 없는 schedule" 경고 + quick 동작).
+#   알림 규칙(재알림 6h·확대 1h·close 강화 120분·재오픈 6h)은 전부 시각 기준이라 주기를 바꿔도 알림량은 그대로.
+#   공개 repo 주의: 60일간 repo 활동(커밋 등)이 없으면 GitHub 가 schedule 을 자동 비활성화한다. 자동 빈 커밋(keepalive)은
+#   GitHub 가 약관 위반으로 막은 전례가 있어 쓰지 않는다 → neon-usage 브리프가 "저장소 마지막 커밋 N일 전" 을 매일 보여 주고
+#   45일 이상이면 ⚠️. 사람이 사소한 커밋 1건을 한다. 꺼졌으면 gh workflow enable (README '60일 규칙').
+# 정각(:00)은 GitHub 스케줄 부하 시간대라 지연·드롭이 잦아 x4분(04·14·…·54)으로 비킨다.
+# 공개 repo 라 run 로그·step summary·장애 이슈는 누구나 볼 수 있다 — 로그에 시크릿·응답 본문 외 내부 정보를 찍지 말 것.
+# 수동: Actions → 이 워크플로 → Run workflow → mode(quick | full | test-alert).
+#   test-alert 는 체크 없이 텔레그램 연동 확인 메시지 1건만 보낸다.
+# 상태: 이 repo 의 GitHub Issue — github-actions 봇이 만든 것 + 제목 '[uptime] 장애 감지' + label 'uptime-incident'(감시 전용.
+#   사람이 쓰는 일반 'incident' 라벨과 분리). open = 장애 중. 외부인이 같은 제목·마커로 만든 이슈는 무시(공개 repo).
+#   라벨을 못 만들면 이슈를 만들지 않고 감시 실패로 끝낸다(라벨 없는 이슈는 상태로 인정 안 함).
+# 알림 억제 (상태는 전부 이슈 본문 마커 — 본문 편집은 GitHub 알림이 안 나감. 자세한 규칙은 uptime.sh 머리말):
+#   텔레그램: 장애 감지 1건 + 6시간마다 재알림 + 이번 장애에서 아직 알리지 않은 체크가 새로 실패하면 '확대' 1건
+#     (장애별 누적 alerted 집합 — 같은 체크가 번갈아 실패해도 반복 안 함).
+#   이슈 코멘트: 텔레그램을 보냈을 때와 이번 장애에서 처음 실패한 체크가 생겼을 때만. 실패 집합이 줄거나 들쭉날쭉한
+#     변화·재오픈/close 사실은 본문 마커로만.
+#   close 는 연속 2회 전부 통과 시에만(히스테리시스). DB 경유 체크 실패를 해소한 경우엔 full 재통과로만 close.
+#   12시간 안 재오픈 2회째부터는 그 장애가 끝날 때까지 통과가 2시간 이어져야 close. 복구 후 6시간 안 재발은 같은 이슈
+#   재오픈 + 플래핑 억제. 텔레그램 전송 실패 재시도는 1시간에 1번.
+#   '감시 자체 실패' 텔레그램은 6시간에 1건(actions/cache 로 직전 전송 시각 보관). GitHub 이슈 API 실패로 상태 기록이
+#   안 되는데 실제 장애가 있으면 uptime.sh 가 🔴 를 바로 보낸다(간격 1h→3h→6h) — 이때 '감시 자체 실패' 알림은 생략.
+# 주의: schedule 은 기본 브랜치(main)에 있는 파일만 실행된다.
+
+on:
+  schedule:
+    - cron: '14,24,34,44,54 * * * *'   # quick
+    - cron: '4 0-1,15-23 * * *'        # quick (영업시간 외 04분 슬롯)
+    - cron: '4 2-14 * * *'             # full  (영업시간 04분 슬롯 — 시간당 1회 DB 경유)
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "quick(DB 미경유) | full(DB 경유, 영업시간·시간당 1회로 자동 제한) | test-alert(텔레그램 확인)"
+        required: true
+        default: quick
+        type: choice
+        options: [quick, full, test-alert]
+
+permissions:
+  contents: read
+  issues: write
+  actions: read     # 모드 결정: 최근 full 실행 조회(gh run list)
+
+concurrency:
+  group: uptime
+  cancel-in-progress: false
+
+jobs:
+  uptime:
+    runs-on: ubuntu-latest
+    # full 최악(체크 5개 전부 hang): 5 × (20s + 10s 대기 + 20s) = 250s + gh·텔레그램 → 5분으로는 빠듯
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+
+      # 감시 자체 실패·직접 장애 알림의 직전 전송 시각 (알림 폭주 방지용 상태). 캐시 미스여도 계속.
+      - name: 감시 상태 복원
+        if: always()
+        uses: actions/cache/restore@v4
+        with:
+          path: .selffail
+          key: uptime-selffail-${{ github.run_id }}
+          restore-keys: uptime-selffail-
+
+      - name: 모드 결정
+        id: mode
+        env:
+          EVENT: ${{ github.event_name }}
+          SCHED: ${{ github.event.schedule }}
+          INPUT_MODE: ${{ inputs.mode }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: bash .github/scripts/uptime-mode.sh
+
+      # ⚠️ 이 스텝 이름은 uptime-mode.sh(FULL_MARKER_STEP)·neon-usage.yml heartbeat 가 문자열로 조회한다 — 바꾸지 말 것.
+      #    success = 이 run 이 DB 경유 체크를 실제로 실행함 (강등된 run 은 skipped).
+      - name: DB 경유(full) 실행 표식
+        if: steps.mode.outputs.mode == 'full'
+        run: echo "mode=full — 이번 run 은 readiness·categories·SSR 홈(DB 경유)을 호출한다"
+
+      # ⚠️ 이 스텝 이름도 neon-usage.yml heartbeat 가 조회한다.
+      - name: 업타임 체크 + 장애 이슈/텔레그램
+        id: check
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+          SELFFAIL_DIR: .selffail
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: bash .github/scripts/uptime.sh "$MODE"
+
+      # ---- 감시 자체 실패: 텔레그램 6시간에 1건 (영구 고장 시 10분마다 알림 폭주 방지) ----
+      - name: 감시 자체 실패 알림
+        id: selffail
+        if: failure() || cancelled()
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          # 체크아웃 실패에도 동작하도록 lib 없이 인라인. 토큰은 stdin 설정으로만 전달.
+          if [ -e "$RUNNER_TEMP/monitor_outage_alerted" ]; then
+            echo "::warning::uptime.sh 가 이미 '🔴 장애 + 이슈 기록 실패' 를 텔레그램으로 보냄 — 감시 실패 알림 생략"; exit 0
+          fi
+          now="$(date -u +%s)"
+          last="$(cat .selffail/last 2>/dev/null || echo 0)"
+          case "$last" in ''|*[!0-9]*) last=0 ;; esac
+          if [ $((now - last)) -lt 21600 ]; then
+            echo "::warning::직전 감시 실패 알림 후 6시간 미만 — 텔레그램 생략 (GitHub 실패 메일은 발송됨)"; exit 0
+          fi
+          reason="$(tail -n 5 "$RUNNER_TEMP/monitor_fail_reason" 2>/dev/null || true)"
+          text="⚠️ 감시 자체 실패: uptime (${MODE:-?}) — 이후 6시간 같은 알림 억제
+          ${reason}
+          ${RUN_URL}"
+          if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
+            echo "::error::텔레그램 시크릿 없음 — GitHub 실패 메일만 발송됨"; exit 0
+          fi
+          http="$(printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TELEGRAM_BOT_TOKEN" \
+            | curl -sS -K - -X POST --max-time 20 -o /dev/null -w '%{http_code}' \
+                --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" --data-urlencode "text=${text:0:4000}")" || http="000"
+          echo "telegram HTTP ${http}"
+          if [ "$http" = "200" ]; then
+            mkdir -p .selffail && echo "$now" > .selffail/last && echo "saved=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::감시 실패 알림 전송도 실패"
+          fi
+
+      - name: 감시 상태 저장
+        if: always() && (steps.check.outputs.state_dirty == '1' || steps.selffail.outputs.saved == '1')
+        uses: actions/cache/save@v4
+        with:
+          path: .selffail
+          key: uptime-selffail-${{ github.run_id }}-${{ github.run_attempt }}
