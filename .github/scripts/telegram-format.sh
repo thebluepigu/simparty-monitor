@@ -130,6 +130,18 @@ _fmt_join() { local sep="$1"; shift; local j=""; local x; for x in "$@"; do [ -n
 
 # ---- 업타임 체크: 이름별 설명 ---------------------------------------------------
 # 영향 — "어떤 화면이 안 열리나". 체크를 추가하면 여기와 _fmt_verdict 에 한 줄씩.
+# 체크 식별자 → 한글 라벨 (문장 줄에서 사용. <pre> 표는 폭 유지를 위해 영문 식별자 그대로 + 아래 범례)
+_fmt_label() {
+  case "$1" in
+    liveness)   printf 'BE 생존(liveness)' ;;
+    robots)     printf 'FE 응답(robots)' ;;
+    readiness)  printf 'DB 준비(readiness)' ;;
+    categories) printf '의상 API(categories)' ;;
+    home)       printf '홈 화면(home)' ;;
+    *)          printf '%s' "$1" ;;
+  esac
+}
+_FMT_LEGEND='liveness=BE 생존 · robots=FE 응답 · readiness=DB 준비 · categories=의상 API · home=홈 화면'
 _fmt_impact() {
   case "$1" in
     liveness)   printf 'BE(API 서버) 전체 — 의상 목록·상세·예약, 관리자 화면 전부 데이터가 안 나옴' ;;
@@ -233,7 +245,7 @@ _fmt_outage() {
   local -a L; L=("${tag}${emoji} <b>$(h "$title")</b>" "$(h "$sub")")
 
   # ② 체크 결과
-  L+=("" "<b>체크 결과</b> (${mode:-?} · $when KST)" "$(_fmt_results "$res")")
+  L+=("" "<b>체크 결과</b> (${mode:-?} · $when KST)" "$(_fmt_results "$res")" "<i>$(h "$_FMT_LEGEND")</i>")
   local carried; carried="$(jq -rn --arg a "$failed" --arg b "$ran_failed" '($a|split(",")|map(select(.!=""))) - ($b|split(",")) | join(",")' 2>/dev/null || true)"
   if [ -n "$carried" ]; then
     L+=("· 이번 실행에서 다시 보지 못한 실패: $(_fmt_codes "$carried") — DB 경유라 full 실행에서만 재확인")
@@ -247,7 +259,7 @@ _fmt_outage() {
     [ -n "$c" ] || continue
     dep=""
     if _csv_has "$failed" liveness && _csv_has "$_FMT_DB_CHECKS" "$c"; then dep=" (BE 다운의 결과)"; fi
-    L+=("· <code>$(h "$c")</code> $(_fmt_impact "$c")$dep")
+    L+=("· <b>$(h "$(_fmt_label "$c")")</b> — $(_fmt_impact "$c")$dep")
   done
   IFS="$IFS_OLD"
 
@@ -490,9 +502,9 @@ fmt_brief() {
   else
     L+=("<b>사이트</b> — 열린 장애 이슈 없음 · 마지막 확인 기록 없음 ⚠️ <i>(정상 여부 모름)</i>")
   fi
-  local up_line="BE liveness · FE robots 마지막 확인 "
+  local up_line="BE 생존(liveness) · FE 응답(robots) 마지막 확인 "
   if [ -n "$B_up_at" ]; then up_line+="<code>$(fmt_when "$B_up_at" "$now")</code>"; else up_line+="기록 없음"; fi
-  local full_line="DB 경유(readiness·카테고리·홈) 마지막 확인 "
+  local full_line="DB 포함 점검(readiness·의상 API·홈 화면) 마지막 확인 "
   if [ -n "$B_full_at" ]; then full_line+="<code>$(fmt_when "$B_full_at" "$now")</code> <i>(KST 11~23시에만)</i>"; else full_line+="기록 없음"; fi
   L+=("· $up_line" "· $full_line")
 
