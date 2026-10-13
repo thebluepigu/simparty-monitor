@@ -110,6 +110,7 @@ brief() {  # $1 제목, $2 fixture 폴더, 나머지 env 할당
         RUNNER_TEMP="$RUNNER_TEMP" GITHUB_STEP_SUMMARY= "$@" bash "$SCRIPTS/neon-usage.sh" 2>&1)" || { bad "$title: neon-usage.sh 실패"; echo "$out" | tail -5; return; }
   msg="$(awk '/^----$/{n++; next} n==1' <<< "$out")"
   show "$title" "$msg"
+  LAST_BRIEF="$msg"
   # 상태(판정 기준점): preview 는 그대로, normal 은 지금 시각으로 갱신돼야 한다
   local ts; ts="$(jq -r .ts "$st/neon-state.json")"
   case " $* " in
@@ -129,6 +130,8 @@ brief "브리프 ⚠️ 예산 초과 + DB체크 40h + 47일 무커밋" "$FIX" "
 BADFX="$(mktemp -d)"; cp "$FIX"/*.json "$BADFX/"; cp "$FIX/consumption_hourly_bad.json" "$BADFX/consumption_hourly.json"
 PREV_DELTA=82080 brief "브리프 🔴 autosuspend 의심 + 사이트 장애 중" "$BADFX" "${COMMON[@]}" \
   UPTIME_INCIDENT="{\"open\":true,\"number\":7,\"url\":\"$ISSUE\",\"failed\":\"liveness\",\"since\":\"$(ISO $((NOW - 2700)))\"}"
+assert_eq "🔴 브리프 추가 문제 줄" "· 사이트 장애 중 — liveness 실패" "$(sed -n 3p <<< "$LAST_BRIEF")"
+assert_eq "🔴 브리프 첫 줄" "🔴 <b>Neon autosuspend 미작동 의심 — 24h 중 22시간 내내 켜짐 외 1건</b>" "$(sed -n 1p <<< "$LAST_BRIEF")"
 brief "브리프 — heartbeat·incident 확인 불가" "$FIX" UPTIME_LAST_SUCCESS= UPTIME_LAST_FULL= UPTIME_INCIDENT= REPO_LAST_COMMIT_EPOCH=
 rm -rf "$BADFX"
 

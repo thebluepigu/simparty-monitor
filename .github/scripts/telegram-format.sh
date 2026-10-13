@@ -437,7 +437,7 @@ fmt_brief() {
     if [ "$B_hj" = "true" ] && [ "${B_fon:-0}" -ge 1 ] 2>/dev/null; then probs+=("Neon autosuspend 미작동 의심 — 24h 중 ${B_fon}시간 내내 켜짐")
     else probs+=("Neon autosuspend 미작동 의심 — 직전 대비 가동률 $(_fmt_pct "$B_dratio")"); fi
   fi
-  if [ "$B_site_open" = "true" ]; then level=crit; probs+=("사이트 장애 중 — ${B_inc_failed:+$B_inc_failed 실패}${B_inc_failed:-복구 확인 대기}"); fi
+  if [ "$B_site_open" = "true" ]; then level=crit; if [ -n "$B_inc_failed" ]; then probs+=("사이트 장애 중 — ${B_inc_failed} 실패"); else probs+=("사이트 장애 중 — 복구 확인 대기"); fi; fi
   if [ "$B_over" = "true" ]; then [ "$level" = crit ] || level=warn; probs+=("Neon 예산 초과 예상 — \$${B_cost} / \$${B_budget}"); fi
   if [ "$B_up_bad" = "true" ]; then [ "$level" = crit ] || level=warn; probs+=("업타임 감시가 ${B_up_max}시간 넘게 멈춤 — 장애를 못 잡는 상태"); fi
   if [ "$B_full_bad" = "true" ]; then [ "$level" = crit ] || level=warn; probs+=("DB 경유 체크가 ${B_full_max}시간 넘게 없음"); fi
