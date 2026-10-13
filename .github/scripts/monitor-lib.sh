@@ -135,8 +135,9 @@ if [ ! -f "$_TG_FMT_FILE" ]; then
   TG_TEMPLATE_ERR="파일 없음"
 elif ! _tg_load_err="$(bash -n "$_TG_FMT_FILE" 2>&1)"; then
   TG_TEMPLATE_ERR="문법 오류(bash -n): ${_tg_load_err:0:300}"
-elif ! _tg_load_err="$( (source "$_TG_FMT_FILE" >/dev/null && declare -F "${_TG_FMT_FUNCS[@]}" >/dev/null) 2>&1 )"; then
-  TG_TEMPLATE_ERR="source 실패 또는 필수 함수 누락: ${_tg_load_err:0:300}"
+elif ! _tg_load_err="$( (source "$_TG_FMT_FILE" >/dev/null && declare -F "${_TG_FMT_FUNCS[@]}" >/dev/null && echo __TG_LOADED__) 2>&1 )"      || [ "${_tg_load_err##*__TG_LOADED__}" != "" ] || [ "${_tg_load_err%__TG_LOADED__}" = "$_tg_load_err" ]; then
+  # 마커(__TG_LOADED__)가 마지막에 찍히지 않으면 top-level exit 등으로 시험 source 가 중간에 끝난 것(L1)
+  TG_TEMPLATE_ERR="source 실패·필수 함수 누락·조기 종료: ${_tg_load_err:0:300}"
 else
   # shellcheck source=telegram-format.sh
   source "$_TG_FMT_FILE" || TG_TEMPLATE_ERR="source 실패"
@@ -166,13 +167,19 @@ fi
 # 사용: tg_render fmt_brief json=… ; echo "$TG_MSG" ; tg_send "$TG_MSG" "$TG_MSG_PM"
 # =============================================================================
 tg_render() {
-  local fn="$1" rc=0 pfn
+  local fn="$1" rc=0 pfn ef rerr=""
   shift
-  TG_MSG="$("$fn" "$@")" || rc=$?
+  # N1 가드: 템플릿 안쪽 $(...) 의 변수 오타는 내부 서브셸만 죽고 바깥은 rc 0 + 내용 빠진 출력으로 끝난다.
+  # 정상 렌더는 stderr 에 아무것도 쓰지 않으므로, stderr 가 비어있지 않으면 rc 와 무관하게 렌더 실패로 본다.
+  ef="$(mktemp "${RUNNER_TEMP:-/tmp}/tg_render.XXXXXX")"
+  TG_MSG="$("$fn" "$@" 2>"$ef")" || rc=$?
+  rerr="$(head -c 600 "$ef" 2>/dev/null)"; rm -f "$ef"
   TG_MSG_PM=""; [ "$TG_FORCE_PLAIN" != "1" ] || TG_MSG_PM=plain
-  if [ "$rc" = "0" ] && [ -n "${TG_MSG//[[:space:]]/}" ]; then return 0; fi
-  echo "::error::텔레그램 템플릿 렌더 실패: ${fn} (rc=${rc}, 출력 ${#TG_MSG}자) — 기본(plain) 형식으로 대체 전송. telegram-format.sh 확인"
-  note_fail "텔레그램 템플릿 렌더 실패: ${fn} (rc=${rc}, 출력 ${#TG_MSG}자) → 기본 형식으로 대체 전송. telegram-format.sh 확인"
+  if [ "$rc" = "0" ] && [ -z "$rerr" ] && [ -n "${TG_MSG//[[:space:]]/}" ]; then return 0; fi
+  [ -z "$rerr" ] || printf '%s
+' "$rerr" >&2
+  echo "::error::텔레그램 템플릿 렌더 실패: ${fn} (rc=${rc}, 출력 ${#TG_MSG}자, stderr ${#rerr}자) — 기본(plain) 형식으로 대체 전송. telegram-format.sh 확인"
+  note_fail "텔레그램 템플릿 렌더 실패: ${fn} (rc=${rc}, 출력 ${#TG_MSG}자, stderr: ${rerr:0:200}) → 기본 형식으로 대체 전송. telegram-format.sh 확인"
   TG_DEGRADED=1
   pfn="plain_${fn#fmt_}"; TG_MSG=""
   if declare -F "$pfn" >/dev/null; then TG_MSG="$("$pfn" "$@")" || TG_MSG=""; fi
