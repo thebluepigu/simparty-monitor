@@ -47,8 +47,14 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=monitor-lib.sh
-source "$HERE/monitor-lib.sh"
+FAIL_FILE="${RUNNER_TEMP:-/tmp}/monitor_fail_reason"
+OUTAGE_FLAG="${RUNNER_TEMP:-/tmp}/monitor_outage_alerted"
+# 실패 사유 파일은 시작 시에만 비운다 (종료 시 비우면 tg_send 가 남긴 HTTP 코드·migrate 안내가 지워진다).
+# lib 를 source 하기 전에 비운다 — lib 의 템플릿 로드 가드가 남기는 'telegram-format.sh 사용 불가' 사유가 살아남게.
+: > "$FAIL_FILE"
+rm -f "$OUTAGE_FLAG"
+# lib source 가 실패해도 트랩이 사유를 남길 수 있게 최소 note_fail 을 먼저 둔다(lib 가 같은 동작으로 다시 정의)
+note_fail() { printf '%s\n' "$*" >> "$FAIL_FILE"; }
 
 MODE="${1:-quick}"
 RUN_URL="${RUN_URL:-local}"
@@ -62,9 +68,8 @@ FLAP_HOLD_MIN="${FLAP_HOLD_MIN:-120}"         # 강화 시 close 에 필요한 �
 LABEL="uptime-incident"
 TITLE_KEY="[uptime] 장애 감지"
 FULL_ONLY="readiness,categories,home"         # full 에서만 도는 체크 = BE 의존 체크
-FAIL_FILE="${RUNNER_TEMP:-/tmp}/monitor_fail_reason"
-OUTAGE_FLAG="${RUNNER_TEMP:-/tmp}/monitor_outage_alerted"
 SELFFAIL_DIR="${SELFFAIL_DIR:-.selffail}"
+SAMPLE_GAP_SEC="${SAMPLE_GAP_SEC:-1}"         # test-alert 샘플 사이 간격 (텔레그램 연속 전송 429 방지)
 
 URL_LIVENESS="${URL_LIVENESS:-https://simparty.fly.dev/actuator/health/liveness}"
 URL_ROBOTS="${URL_ROBOTS:-https://simparty.shop/robots.txt}"
@@ -72,11 +77,7 @@ URL_READINESS="${URL_READINESS:-https://simparty.fly.dev/actuator/health/readine
 URL_CATEGORIES="${URL_CATEGORIES:-https://simparty.fly.dev/simparty/categories}"
 URL_HOME="${URL_HOME:-https://simparty.shop/}"
 
-# 실패 사유 파일은 시작 시에만 비운다 (종료 시 비우면 tg_send 가 남긴 HTTP 코드·migrate 안내가 지워진다)
-: > "$FAIL_FILE"
-rm -f "$OUTAGE_FLAG"
-
-STAGE="init"; DONE=0; FAILED_NOW=""; TABLE=""; NOW_KST="$(kst_now)"; NOW_EPOCH="$(date -u +%s)"; TG_SENT_RUN=0
+STAGE="init"; DONE=0; FAILED_NOW=""; TABLE=""; NOW_EPOCH="$(date -u +%s)"; TG_SENT_RUN=0; TG_AT=""
 RESULTS=""   # 체크 결과 TSV (WORK 생성 후 지정) — on_exit 의 직접 🔴 도 이 파일로 렌더
 iso_now() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
 
@@ -110,13 +111,19 @@ on_exit() {
     gap="$(selffail_interval "$cnt")"
     if [ $((now - last)) -lt "$gap" ]; then
       echo "::warning::상태 기록 실패 + 장애 — 직전 직접 알림(${cnt}회째) 후 $((gap / 3600))시간 미만이라 생략"
-    elif tg_send "$(fmt_outage_detected kind=selffail results="$RESULTS" now="$NOW_EPOCH" mode="$MODE" run="$RUN_URL")"; then
+    elif tg_fmt_send fmt_outage_detected kind=selffail results="$RESULTS" now="$NOW_EPOCH" mode="$MODE" run="$RUN_URL"; then
+      # (템플릿이 깨져도 tg_fmt_send 가 plain 으로 대체 — 빈 🔴 가 가지 않는다)
       record_direct_alert "$now" $((cnt + 1))
       : > "$OUTAGE_FLAG"
     fi
   fi
 }
+# 트랩은 lib source 보다 먼저 — lib 가 깨져 source 에서 죽어도 사유가 남고 워크플로 '감시 자체 실패' 스텝이 알린다
 trap on_exit EXIT
+
+# shellcheck source=monitor-lib.sh
+source "$HERE/monitor-lib.sh"
+NOW_KST="$(kst_now)"
 
 # gh 는 GH_REPO 가 비면 현재 디렉터리의 git remote 로 떨어진다 — 로컬 테스트 중 엉뚱한 repo 에
 # 이슈를 만드는 사고(검증 중 실제 발생) 방지를 위해 명시를 강제. 워크플로는 github.repository 를 넣는다.
@@ -141,14 +148,22 @@ finish() {
     echo "::error::텔레그램 전송 실패가 있었음 — job 을 실패로 표시(GitHub 실패 메일 경로 확보)"
     exit 1
   fi
+  if [ "$TG_DEGRADED" = "1" ]; then
+    # 알림 자체는 기본(plain) 형식으로 갔다. 템플릿을 고칠 때까지 조용히 묻히지 않게 job 을 실패로 표시
+    echo "::error::텔레그램 템플릿(telegram-format.sh) 오류 — 기본 형식으로 대체 전송함. job 을 실패로 표시"
+    exit 1
+  fi
   exit 0
 }
 
 if [ "$MODE" = "test-alert" ]; then
-  # 머리 메시지 + 샘플 4종. fixture 렌더라 체크·이슈·상태(selffail 캐시)를 건드리지 않는다
-  if tg_send "$(fmt_test now="$NOW_EPOCH" run="$RUN_URL")"; then
+  # 머리 메시지 + 샘플 4종. fixture 렌더라 체크·이슈·상태(selffail 캐시)를 건드리지 않는다.
+  # 샘플 사이 SAMPLE_GAP_SEC(1초) — 같은 채팅 연속 전송은 텔레그램 429(rate limit)를 받을 수 있다.
+  # (전송이 실패하면 job 은 실패하지만, 워크플로 '감시 자체 실패' 스텝은 test-alert 실패로 6시간 억제 상태를 남기지 않는다)
+  if tg_fmt_send fmt_test now="$NOW_EPOCH" run="$RUN_URL"; then
     for k in detected recovered selffail flap; do
-      tg_send "$(fmt_sample "$k" now="$NOW_EPOCH" run="$RUN_URL" repo="${GH_REPO:-thebluepigu/simparty-monitor}")" || true
+      sleep "$SAMPLE_GAP_SEC"
+      tg_fmt_send fmt_sample "$k" now="$NOW_EPOCH" run="$RUN_URL" repo="${GH_REPO:-thebluepigu/simparty-monitor}" || true
     done
   fi
   if [ "$TG_FAILED" = "0" ]; then echo "텔레그램 test·샘플 4종 전송 성공"; fi
@@ -308,10 +323,11 @@ set_body_markers() {
 }
 # 사람용 코멘트 — 상태가 아니므로 실패해도 job 을 죽이지 않는다 (상태는 이미 본문에 기록됨)
 comment() { gh issue comment "$1" --body "$2" >/dev/null || echo "::warning::이슈 #$1 코멘트 실패 (상태는 본문 마커에 기록됨)"; }
-# 텔레그램. 성공 시 TG_SENT_RUN=1(트랩 중복 🔴 방지)·TG_AT=지금, 실패 시 ATTEMPT_AT=지금. 성공 0 / 실패 1
+# 텔레그램. 인자 = 템플릿 함수 + key=value (tg_fmt_send — 렌더 실패·빈 본문이면 plain 기본 형식으로 대체 전송).
+# 성공 시 TG_SENT_RUN=1(트랩 중복 🔴 방지)·TG_AT=지금, 실패 시 ATTEMPT_AT=지금. 성공 0 / 실패 1
 TG_AT=""; ATTEMPT_AT=""
 alert() {
-  if tg_send "$1"; then TG_SENT_RUN=1; TG_AT="$(iso_now)"; return 0; fi
+  if tg_fmt_send "$@"; then TG_SENT_RUN=1; TG_AT="$(iso_now)"; return 0; fi
   ATTEMPT_AT="$(iso_now)"; return 1
 }
 # 텔레그램 결과 마커 key/value 를 TGM 배열에 (성공: tg-sent, 실패: tg-attempt)
@@ -353,11 +369,11 @@ if [ -z "$ISSUE" ]; then
     TGV=(results="$RESULTS" now="$NOW_EPOCH" mode="$MODE" issue="$ISSUE_URL" run="$RUN_URL" since="$NOW_ISO"
          remind_h="$REMIND_HOURS" reopen_min="$REOPEN_MINUTES" flap_hold_min="$FLAP_HOLD_MIN")
     if [ "$REOPENS_WIN" = "0" ]; then
-      if alert "$(fmt_outage_detected kind=reopen "${TGV[@]}")"; then MARK="📨 텔레그램 재발 알림"; fi
+      if alert fmt_outage_detected kind=reopen "${TGV[@]}"; then MARK="📨 텔레그램 재발 알림"; fi
     elif [ "$REOPENS_WIN" = "1" ]; then
-      if alert "$(fmt_flap "${TGV[@]}")"; then MARK="📨 텔레그램 반복 알림"; fi
+      if alert fmt_flap "${TGV[@]}"; then MARK="📨 텔레그램 반복 알림"; fi
     elif [ "$(hours_passed "$LAST_TG" "$REMIND_HOURS")" = "yes" ]; then
-      if alert "$(fmt_outage_ongoing kind=flap_remind "${TGV[@]}")"; then MARK="📨 텔레그램 재알림"; fi
+      if alert fmt_outage_ongoing kind=flap_remind "${TGV[@]}"; then MARK="📨 텔레그램 재알림"; fi
     else
       echo "플래핑 억제 — 12시간 내 이전 재발 ${REOPENS_WIN}회, 텔레그램 생략"
     fi
@@ -394,7 +410,8 @@ if [ -z "$ISSUE" ]; then
   URL="$(gh issue create --title "$TITLE" --body "$BODY" --label "$LABEL")"
   NUM="${URL##*/}"
   echo "장애 이슈 생성: $URL"
-  alert "$(fmt_outage_detected kind=new results="$RESULTS" now="$NOW_EPOCH" mode="$MODE" issue="$URL" run="$RUN_URL"     since="$NOW_ISO" remind_h="$REMIND_HOURS")" || true
+  alert fmt_outage_detected kind=new results="$RESULTS" now="$NOW_EPOCH" mode="$MODE" issue="$URL" run="$RUN_URL" \
+    since="$NOW_ISO" remind_h="$REMIND_HOURS" reopen_min="$REOPEN_MINUTES" || true
   # 이슈 생성 자체가 GitHub 알림 1건 — 전송 결과는 본문 마커로만 (코멘트 생략)
   load_view "$NUM"
   tg_markers
@@ -449,7 +466,9 @@ if [ -z "$FAILED_SET" ]; then
   OK_AT=""
   # 🟢 는 풀리지 않은 🔴/🟠 가 있을 때만 (플래핑 억제로 🔴 를 생략했다면 🟢 도 생략)
   if [ "$(ts_gt "$LAST_TG" "$LAST_OK_TG")" = "yes" ]; then
-    if alert "$(fmt_recovered results="$RESULTS" now="$NOW_EPOCH" mode="$MODE" issue="$ISSUE_URL" run="$RUN_URL"         since="$DOWN_SINCE" pass_at="$PENDING" seen="$(set_union "$SEEN" "$PREV_FAILED")" reopens="$REOPENS_WIN")"; then
+    if alert fmt_recovered results="$RESULTS" now="$NOW_EPOCH" mode="$MODE" issue="$ISSUE_URL" run="$RUN_URL" \
+         since="$DOWN_SINCE" pass_at="$PENDING" seen="$(set_union "$SEEN" "$PREV_FAILED")" reopens="$REOPENS_WIN" \
+         flap_hold="$FLAPPY" flap_hold_min="$FLAP_HOLD_MIN" reopen_min="$REOPEN_MINUTES"; then
       OK_AT="$TG_AT"; TG_AT=""
     fi
   else
@@ -493,9 +512,10 @@ SENT=0
 if [ -n "$HEAD" ]; then
   TGV=(results="$RESULTS" now="$NOW_EPOCH" mode="$MODE" issue="$ISSUE_URL" run="$RUN_URL" since="$DOWN_SINCE"
        failed="$(set_norm "$FAILED_SET")" remind_h="$REMIND_HOURS" flap_hold="$FLAPPY" flap_hold_min="$FLAP_HOLD_MIN")
-  if [ "$HEAD" = "expanded" ]; then MSG="$(fmt_outage_expanded new_fails="$NEW_FAILS" "${TGV[@]}")"
-  else MSG="$(fmt_outage_ongoing kind="$HEAD" "${TGV[@]}")"; fi
-  if alert "$MSG"; then SENT=1; fi
+  # 렌더 실패(set -u 미정의 변수 등)여도 alert → tg_fmt_send 가 plain 기본 형식으로 대체해 보내고 상태 기록까지 이어간다
+  if [ "$HEAD" = "expanded" ]; then FMT=(fmt_outage_expanded new_fails="$NEW_FAILS")
+  else FMT=(fmt_outage_ongoing kind="$HEAD"); fi
+  if alert "${FMT[@]}" "${TGV[@]}"; then SENT=1; fi
 fi
 NEW_ALERTED="$(set_norm "$ALERTED")"
 if [ "$SENT" = "1" ]; then NEW_ALERTED="$(set_union "$ALERTED" "$FAILED_NOW")"; fi

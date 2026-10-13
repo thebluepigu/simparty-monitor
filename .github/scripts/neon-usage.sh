@@ -10,8 +10,10 @@
 #   NEON_MIN_CU (기본 0.25 — autoscaling 최소 CU, 시간별 상시가동 판정 기준)
 #   UPTIME_LAST_SUCCESS (옵션, ISO — uptime.yml 마지막 성공 실행 시각. 워크플로가 gh run list 로 넣어 줌)
 #   UPTIME_LAST_FULL (옵션, ISO — uptime.yml 이 DB 경유(full) 체크를 실제로 마친 마지막 시각)
-#   HB_UPTIME_MAX_H (기본 12) · HB_FULL_MAX_H (기본 36) — 이 시간을 넘겨야 heartbeat ⚠️ (GitHub cron 드롭으로 실측 간격이
-#     설계 10분보다 훨씬 길어 예전 기준 2h/14h 는 매일 ⚠️ 가 붙어 진짜 경보를 희석했다 — 2026-10-13 완화)
+#   HB_UPTIME_MAX_H (기본 6) · HB_FULL_MAX_H (기본 36) — 이 시간을 넘겨야 heartbeat ⚠️ (uptime 은 확인 불가여도 ⚠️).
+#     예전 2h/14h 는 GitHub cron 드롭(실측 간격 최대 ~3h) 때문에 매일 ⚠️ 라 경보를 희석했고, 12h 는 밤사이 멈춘 감시를
+#     놓쳤다 → uptime 6h (2026-10-13)
+#   SITE_FRESH_H (기본 3) — 브리프 ② 사이트 "✅ 정상" 은 uptime 마지막 성공이 이 시간 이내일 때만
 #   UPTIME_RUNS_24H · UPTIME_FULL_24H · UPTIME_FULL_EXEC_24H (옵션, 최근 24h 정기 실행 수·full 의도 수·DB체크 실제 수 — 드롭 정도 표시)
 #   UPTIME_DESIGN_RUNS (기본 144) · UPTIME_DESIGN_FULL (기본 13) — 설계상 하루 실행 수
 #   UPTIME_INCIDENT (옵션, JSON — 열린 장애 이슈 {"open":false} | {"open":true,"number","url","failed","since"}, 빈 값 = 확인 불가)
@@ -291,15 +293,24 @@ fi
 # ---- 5) 텔레그램 브리프 -------------------------------------------------------
 # 여기서는 값과 판정 플래그만 계산해 brief.json 으로 넘기고, 문구·구조는 telegram-format.sh 의 fmt_brief 가 만든다.
 # heartbeat — 감시 워크플로 자체가 멈춰도(비활성화·YAML 깨짐·스케줄 누락) 여기서 드러나게.
-#   uptime 마지막 성공이 HB_UPTIME_MAX_H(12h) 넘게 전, DB 경유(full) 마지막 성공이 HB_FULL_MAX_H(36h) 넘게 전이면 ⚠️.
-#   (full 은 KST 11:04~23:04 에만 돌아 09:17 브리프 시점 정상 간격 ~10h, 여기에 cron 드롭 여유 → 36h = 하루 반 동안 full 0회)
+#   uptime 마지막 성공이 HB_UPTIME_MAX_H(6h) 넘게 전이거나 **확인 불가**(조회 실패·기록 없음)면 첫 줄 ⚠️.
+#     (10분 주기 + GitHub cron 드롭 실측 최대 ~3h → 6h 면 매일 오탐 없이 "반나절 가까이 감시 공백"을 잡는다.
+#      12h 였을 때는 22시에 멈춘 감시가 09:17 브리프에선 11h 라 ✅ 로 보였다 — 2026-10-13 적대 검증 F3)
+#   DB 경유(full) 마지막 성공이 HB_FULL_MAX_H(36h) 넘게 전이면 ⚠️.
+#     (full 은 KST 11:04~23:04 에만 돌아 09:17 브리프 시점 정상 간격 ~10h, 여기에 cron 드롭 여유 → 36h = 하루 반 동안 full 0회)
+#   ② 사이트 "✅ 정상" 은 열린 장애 이슈가 없고 **uptime 마지막 성공이 SITE_FRESH_H(3h) 이내**일 때만.
+#     그보다 오래됐거나 모르면 "열린 이슈 없음 · 마지막 확인 N시간 전 ⚠️" — 감시가 멈춰 이슈가 안 열린 것일 수 있다.
 # 저장소 마지막 커밋 경과일 — 공개 repo 는 60일 무활동이면 GitHub 가 schedule 워크플로(이 브리프 포함)를 자동으로 끈다.
 #   자동 빈 커밋(keepalive)은 GitHub 가 약관 위반으로 막은 전례가 있어 쓰지 않는다 → 45일부터 ⚠️ 로 사람에게 알린다.
 #   값이 없거나 숫자가 아니면 "확인 불가 ⚠️" (조용히 넘어가지 않게, 단 첫 줄 판정에는 반영 안 함).
-HB_UPTIME_MAX_H="${HB_UPTIME_MAX_H:-12}"; HB_FULL_MAX_H="${HB_FULL_MAX_H:-36}"
+HB_UPTIME_MAX_H="${HB_UPTIME_MAX_H:-6}"; HB_FULL_MAX_H="${HB_FULL_MAX_H:-36}"; SITE_FRESH_H="${SITE_FRESH_H:-3}"
 REPO_IDLE_WARN_DAYS="${REPO_IDLE_WARN_DAYS:-45}"
-for v in HB_UPTIME_MAX_H HB_FULL_MAX_H REPO_IDLE_WARN_DAYS; do
-  case "${!v}" in ''|*[!0-9]*) echo "::warning::$v='${!v}' 숫자 아님 — 기본값"; case "$v" in HB_UPTIME_MAX_H) HB_UPTIME_MAX_H=12 ;; HB_FULL_MAX_H) HB_FULL_MAX_H=36 ;; *) REPO_IDLE_WARN_DAYS=45 ;; esac ;; esac
+for v in HB_UPTIME_MAX_H HB_FULL_MAX_H SITE_FRESH_H REPO_IDLE_WARN_DAYS; do
+  case "${!v}" in
+    ''|*[!0-9]*)
+      echo "::warning::$v='${!v}' 숫자 아님 — 기본값"
+      case "$v" in HB_UPTIME_MAX_H) HB_UPTIME_MAX_H=6 ;; HB_FULL_MAX_H) HB_FULL_MAX_H=36 ;; SITE_FRESH_H) SITE_FRESH_H=3 ;; *) REPO_IDLE_WARN_DAYS=45 ;; esac ;;
+  esac
 done
 iso_epoch() { [ -n "${1:-}" ] || return 0; date -u -d "$1" +%s 2>/dev/null || true; }
 num_or_empty() { case "${1:-}" in ''|*[!0-9]*) ;; *) printf '%s' "$1" ;; esac; }
@@ -313,7 +324,13 @@ if [ -n "$INCIDENT" ] && ! jq -e 'type == "object" and has("open")' <<< "$INCIDE
   echo "::warning::UPTIME_INCIDENT 형식 오류 — 사이트 상태 '확인 불가'"; INCIDENT=""
 fi
 
-jq -n --slurpfile r "$WORK/report.json" --argjson now "$NOW" --arg mode "$BRIEF_MODE" --arg note "$PERIOD_NOTE"   --arg up_at "$(iso_epoch "${UPTIME_LAST_SUCCESS:-}")" --arg full_at "$(iso_epoch "${UPTIME_LAST_FULL:-}")"   --argjson up_max "$HB_UPTIME_MAX_H" --argjson full_max "$HB_FULL_MAX_H"   --arg runs "$(num_or_empty "${UPTIME_RUNS_24H:-}")" --arg full24 "$(num_or_empty "${UPTIME_FULL_24H:-}")"   --arg fullx "$(num_or_empty "${UPTIME_FULL_EXEC_24H:-}")"   --argjson dr "${UPTIME_DESIGN_RUNS:-144}" --argjson df "${UPTIME_DESIGN_FULL:-13}"   --arg inc "$INCIDENT" --arg lcd "$LC_DAYS" --argjson idle_warn "$REPO_IDLE_WARN_DAYS" '
+jq -n --slurpfile r "$WORK/report.json" --argjson now "$NOW" --arg mode "$BRIEF_MODE" --arg note "$PERIOD_NOTE" \
+  --arg up_at "$(iso_epoch "${UPTIME_LAST_SUCCESS:-}")" --arg full_at "$(iso_epoch "${UPTIME_LAST_FULL:-}")" \
+  --argjson up_max "$HB_UPTIME_MAX_H" --argjson full_max "$HB_FULL_MAX_H" --argjson site_fresh "$SITE_FRESH_H" \
+  --arg runs "$(num_or_empty "${UPTIME_RUNS_24H:-}")" --arg full24 "$(num_or_empty "${UPTIME_FULL_24H:-}")" \
+  --arg fullx "$(num_or_empty "${UPTIME_FULL_EXEC_24H:-}")" \
+  --argjson dr "${UPTIME_DESIGN_RUNS:-144}" --argjson df "${UPTIME_DESIGN_FULL:-13}" \
+  --arg inc "$INCIDENT" --arg lcd "$LC_DAYS" --argjson idle_warn "$REPO_IDLE_WARN_DAYS" '
   def num($s): if $s == "" then null else ($s | tonumber) end;
   $r[0] as $p
   | ($p.autosuspend.state == "judge" and ($p.autosuspend.ok | not)) as $delta_bad
@@ -332,25 +349,38 @@ jq -n --slurpfile r "$WORK/report.json" --argjson now "$NOW" --arg mode "$BRIEF_
            delta_judged: ($p.autosuspend.state == "judge"), delta_ratio: $p.autosuspend.ratio, delta_why: $p.autosuspend.why,
            act_src: $p.act_src, period_ratio: $p.period_active_ratio},
       site: (if $inc == "" then null else ($inc | fromjson) end),
-      hb: {uptime_at: $ua, full_at: $fa, uptime_max_h: $up_max, full_max_h: $full_max,
-           uptime_bad: ($ua != null and ($now - $ua) > $up_max * 3600),
+      hb: {uptime_at: $ua, full_at: $fa, uptime_max_h: $up_max, full_max_h: $full_max, site_fresh_h: $site_fresh,
+           # 확인 불가(null)도 bad — 감시가 멈췄는지 모르는 상태를 ✅ 로 보이지 않게 (첫 줄 ⚠️)
+           uptime_unknown: ($ua == null),
+           uptime_bad: ($ua == null or ($now - $ua) > $up_max * 3600),
+           # ② 사이트 ✅ 는 마지막 확인이 최근일 때만
+           uptime_fresh: ($ua != null and ($now - $ua) <= $site_fresh * 3600),
            full_bad: ($fa != null and ($now - $fa) > $full_max * 3600),
            runs24: num($runs), full24: num($full24), full_exec24: num($fullx), design_runs: $dr, design_full: $df},
       repo: {idle_days: $idle, warn_days: $idle_warn, bad: ($idle != null and $idle >= $idle_warn)}
     }' > "$WORK/brief.json"
 
-MSG="$(fmt_brief json="$WORK/brief.json")"
+# 렌더 가드(monitor-lib.sh tg_render): fmt_brief 가 실패(미정의 변수 등)하거나 빈 출력이면 plain_brief(옛 형식)로 대체 +
+# note_fail + TG_DEGRADED=1. 템플릿 실수로 브리프가 통째로 빠지는 일은 없다
+tg_render fmt_brief json="$WORK/brief.json"
+MSG="$TG_MSG"
 
 echo "----"; echo "$MSG"; echo "----"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   # step summary 는 add-mask 대상이 아닐 수 있고 공개 repo 에서 누구나 본다 → 프로젝트·조직 id 는 빼고 기록
-  { echo "### Neon 사용량"; echo '```'; html_to_plain "$MSG"; echo; echo '```'; echo '```json'; jq 'del(.project_id, .org_id)' "$WORK/report.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+  { echo "### Neon 사용량"; echo '```'
+    if [ -n "$TG_MSG_PM" ]; then printf '%s' "$MSG"; else html_to_plain "$MSG"; fi
+    echo; echo '```'; echo '```json'; jq 'del(.project_id, .org_id)' "$WORK/report.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 fi
 
-if [ "${DRY_RUN:-0}" = "1" ]; then echo "DRY_RUN — 텔레그램 생략"; exit 0; fi
+degraded_exit() {  # 템플릿 오류로 기본 형식을 썼으면 job 을 실패로 표시(브리프는 이미 보냄 → GitHub 메일 + 감시 실패 알림)
+  if [ "$TG_DEGRADED" = "1" ]; then echo "::error::텔레그램 템플릿 오류 — 기본 형식으로 대체함. job 을 실패로 표시"; exit 1; fi
+}
+if [ "${DRY_RUN:-0}" = "1" ]; then echo "DRY_RUN — 텔레그램 생략"; degraded_exit; exit 0; fi
 # 실패 사유 파일은 비우지 않는다 — tg_send 가 남긴 HTTP 코드·migrate_to_chat_id 안내가 '감시 자체 실패' 알림에 실려야 함
 # (RUNNER_TEMP 는 job 마다 새로 만들어져 이전 실행 잔여물이 없다)
 # 실행 로그 링크는 브리프에 넣지 않는다(매일 오는 메시지라 군더더기) — 필요하면 step summary·Actions 탭
-tg_send "$MSG" || true
+tg_send "$MSG" "$TG_MSG_PM" || true
 if [ "$TG_FAILED" = "1" ]; then note_fail "텔레그램 전송 실패"; echo "::error::텔레그램 전송 실패"; exit 1; fi
+degraded_exit
 exit 0

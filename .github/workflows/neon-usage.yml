@@ -21,11 +21,13 @@ name: Neon 사용량 일일 브리프
 #          첫 실행·간격 20시간 미만(수동 실행 등)은 생략하고 기준점도 유지. 기본 브랜치 값이 없으면 프로젝트 합계로
 #          대체하고 문구에 명시)
 #   🔴 열린 업타임 장애 이슈가 있음(사이트 장애 중)
-#   ⚠️ 기간말 예상 비용 > vars.NEON_BUDGET_USD (기본 $15), 또는 uptime.yml 마지막 성공 실행이 12시간 넘게 전,
-#      또는 DB 경유(full) 체크 마지막 성공이 36시간 넘게 전 (감시 워크플로 자체가 멈추거나 full 이 영영 강등되는 것을
-#      드러내는 heartbeat). 2026-10-13 2h/14h → 12h/36h 완화: GitHub 가 무료 cron 을 드롭해 실측 간격이 설계 10분보다
-#      훨씬 길어(3시간대, full 하루 2회) 매일 ⚠️ 가 붙어 진짜 경보를 희석했다. 드롭 정도는 ⑤ 의 "최근 24h 실행 N회 / 설계 144"
-#      로 따로 보여 준다(경보 아님). 기준은 vars.HB_UPTIME_MAX_H · vars.HB_FULL_MAX_H 로 조정.
+#   ⚠️ 기간말 예상 비용 > vars.NEON_BUDGET_USD (기본 $15), 또는 uptime.yml 마지막 **정기(schedule)** 성공 실행이 6시간 넘게
+#      전이거나 확인 불가, 또는 DB 경유(full) 체크 마지막 성공이 36시간 넘게 전 (감시 워크플로 자체가 멈추거나 full 이 영영
+#      강등되는 것을 드러내는 heartbeat). 2026-10-13: 2h/14h 는 GitHub 무료 cron 드롭(실측 간격 최대 ~3시간, full 하루 2회)
+#      때문에 매일 ⚠️ 라 경보를 희석 → 12h/36h 로 완화했다가, 12h 는 밤 22시에 멈춘 감시를 09:17 에 ✅ 로 보여 6h 로 조정.
+#      수동 test-alert 성공은 heartbeat 로 세지 않는다(체크 없이 성공 — 멈춘 스케줄을 가림). 드롭 정도는 ⑤ 의 "최근 24h
+#      실행 N회 / 설계 144" 로 따로 보여 준다(경보 아님). 기준은 vars.HB_UPTIME_MAX_H · vars.HB_FULL_MAX_H 로 조정.
+#      ② 사이트 "✅ 정상" 은 열린 장애 이슈가 없고 uptime 마지막 성공이 vars.SITE_FRESH_H(3h) 이내일 때만.
 #      또는 저장소 마지막 커밋이 45일(REPO_IDLE_WARN_DAYS) 이상 전 — 공개 repo 는 60일 무활동이면 GitHub 가 schedule 을
 #      자동 비활성화한다. 자동 빈 커밋(keepalive)은 GitHub 가 약관 위반으로 막은 전례가 있어 쓰지 않고, 사람이 사소한
 #      커밋 1건을 하도록 여기서 알린다(README '60일 규칙' 참고).
@@ -88,7 +90,8 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           # 실패해도 브리프는 보낸다 — 값이 비면 브리프에 "확인 불가" 로 표시
-          last="$(gh run list --workflow uptime.yml --status success --limit 1 --json createdAt -q '.[0].createdAt // ""' 2>/dev/null || true)"
+          # 정기(schedule) 실행만 센다 — 수동 test-alert 는 체크 없이 성공하므로 heartbeat 를 리셋해 멈춘 스케줄을 가린다(F4)
+          last="$(gh run list --workflow uptime.yml --status success --event schedule --limit 1 --json createdAt -q '.[0].createdAt // ""' 2>/dev/null || true)"
           echo "uptime.yml 마지막 성공: ${last:-없음}"
           echo "last=${last}" >> "$GITHUB_OUTPUT"
           # 최근 실행 목록 1회 조회(300건 ≈ 설계상 2일치) — 24h 실행 수·full 후보를 여기서 같이 뽑는다
@@ -163,7 +166,8 @@ jobs:
           UPTIME_FULL_24H: ${{ steps.hb.outputs.full24 }}
           UPTIME_FULL_EXEC_24H: ${{ steps.hb.outputs.fullx24 }}
           UPTIME_INCIDENT: ${{ steps.hb.outputs.incident }}
-          HB_UPTIME_MAX_H: ${{ vars.HB_UPTIME_MAX_H || '12' }}
+          HB_UPTIME_MAX_H: ${{ vars.HB_UPTIME_MAX_H || '6' }}
+          SITE_FRESH_H: ${{ vars.SITE_FRESH_H || '3' }}
           HB_FULL_MAX_H: ${{ vars.HB_FULL_MAX_H || '36' }}
           # 정기(schedule) 실행엔 inputs 가 없어 normal
           BRIEF_MODE: ${{ inputs.mode || 'normal' }}
@@ -192,6 +196,7 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.SIMPARTY_TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.SIMPARTY_TELEGRAM_CHAT_ID }}
+          BRIEF_MODE: ${{ inputs.mode || 'normal' }}
         run: |
           now="$(date -u +%s)"
           last="$(cat .selffail/last 2>/dev/null || echo 0)"
@@ -204,13 +209,17 @@ jobs:
             echo "::error::텔레그램 시크릿 없음 — GitHub 실패 메일만 발송됨"; exit 0
           fi
           sent=0
-          if [ -f .github/scripts/monitor-lib.sh ] && [ -f .github/scripts/telegram-format.sh ]; then
-            # 정상 경로: 템플릿(fmt_selffail) + HTML (파싱 실패 시 tg_send 가 plain 재전송)
-            source .github/scripts/monitor-lib.sh
-            if tg_send "$(fmt_selffail workflow=neon-usage reason="$reason" run="$RUN_URL" suppress_h=6)"; then sent=1; fi
+          # 1차: 템플릿 lib(fmt_selffail, HTML)를 **서브셸**에서 — lib·템플릿이 깨져 source·렌더가 죽어도 이 스텝은 산다
+          #      (템플릿이 깨졌으면 lib 가 스스로 plain 형식으로 대체). 2차: 1차가 어떤 이유로든 실패하면 항상 인라인 plain.
+          if ( set +e
+               source .github/scripts/monitor-lib.sh || exit 1
+               tg_render fmt_selffail workflow=neon-usage mode="${BRIEF_MODE}" reason="$reason" run="$RUN_URL" suppress_h=6
+               [ -n "$TG_MSG" ] && tg_send "$TG_MSG" "$TG_MSG_PM" ); then
+            sent=1
           else
-            # 체크아웃 실패 대비: lib 없이 인라인 plain. 토큰은 stdin 설정으로만 전달
-            text="⚠️ 감시 자체 실패: neon-usage
+            echo "::warning::템플릿 경로 실패 — 인라인 plain 으로 전송"
+            # lib 없이 인라인 plain. 토큰은 stdin 설정으로만 전달
+            text="⚠️ 감시 자체 실패: neon-usage (${BRIEF_MODE}) — 이후 6시간 같은 알림 억제
           ${reason}
           ${RUN_URL}"
             http="$(printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TELEGRAM_BOT_TOKEN" \
@@ -219,10 +228,13 @@ jobs:
             echo "telegram HTTP ${http}"
             [ "$http" != "200" ] || sent=1
           fi
-          if [ "$sent" = "1" ]; then
-            mkdir -p .selffail && echo "$now" > .selffail/last && echo "saved=1" >> "$GITHUB_OUTPUT"
-          else
+          if [ "$sent" != "1" ]; then
             echo "::warning::감시 실패 알림 전송도 실패"
+          elif [ "$BRIEF_MODE" = "preview" ]; then
+            # 수동 preview(서식 조정 중) 실패는 6시간 억제 상태를 남기지 않는다 — 다음 정기 브리프의 실패 알림을 가리지 않게
+            echo "preview 실패 — 알림은 보냈지만 6시간 억제 상태는 저장하지 않음"
+          else
+            mkdir -p .selffail && echo "$now" > .selffail/last && echo "saved=1" >> "$GITHUB_OUTPUT"
           fi
 
       - name: 감시 실패 알림 — 전송 시각 저장

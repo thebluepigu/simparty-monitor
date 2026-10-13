@@ -1,0 +1,39 @@
+name: CI (스크립트 문법·템플릿 테스트)
+
+# 목적: 감시 스크립트·텔레그램 템플릿의 실수를 main(=스케줄이 실제로 도는 브랜치)에 올리기 전에 잡는다.
+#   2026-10-13 적대 검증 F1: telegram-format.sh 에 괄호 하나만 잘못 넣어도 uptime.sh 가 source 단계에서 죽어 장애 알림·
+#   감시 실패 알림이 함께 사라질 수 있었다(지금은 monitor-lib.sh 가 plain 형식으로 대체하지만, 서식이 깨지고 job 이 실패한다).
+#   문구만 바꾸는 미세 조정도 이 CI 를 통과시킨 뒤 main 에 올린다 — 작업 브랜치 push 에서 먼저 보인다.
+# 검사(.github/scripts/tests/ci-check.sh — 로컬에서도 같은 명령):
+#   bash -n(모든 *.sh) · 워크플로 YAML 파싱 + run: 블록 bash -n · tests/telegram-format.test.sh(렌더·이스케이프·재전송·고장 주입)
+# 네트워크·시크릿을 쓰지 않는다(가짜 curl/gh fixture). 공개 repo 라 fork PR 에서도 돌지만 시크릿이 없어 안전하다.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: 도구 확인 (bash·jq·python yaml)
+        run: |
+          bash --version | head -n 1
+          jq --version
+          python3 -c 'import yaml' 2>/dev/null || pip install --user pyyaml
+
+      - name: 문법 + YAML + 템플릿 테스트
+        run: bash .github/scripts/tests/ci-check.sh

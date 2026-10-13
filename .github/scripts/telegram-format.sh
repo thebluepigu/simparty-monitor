@@ -38,6 +38,8 @@
 #
 # ■ 미리 보기
 #   로컬:  bash .github/scripts/tests/telegram-format.test.sh        # 렌더 전문 + html_escape 단위 테스트
+#   커밋 전: bash .github/scripts/tests/ci-check.sh                  # CI(.github/workflows/ci.yml)와 같은 검사 — bash -n·YAML·테스트
+#   이 파일이 깨져도(문법 오류·변수 오타) 알림은 monitor-lib.sh 가 옛 plain 형식으로 대체해 보내고 job 을 실패로 표시한다.
 #   실전송: gh workflow run neon-usage.yml -f mode=preview  (실데이터 브리프, "[미리보기]" · 상태 저장 안 함)
 #           gh workflow run uptime.yml -f mode=test-alert   (샘플 4종, "[샘플]" · 이슈·상태 안 건드림)
 #
@@ -138,7 +140,7 @@ _fmt_impact() {
     *)          printf '%s 체크 실패' "$(h "$1")" ;;
   esac
 }
-# 실패 집합 → 한 문장 판정 (첫 줄 굵게 부분)
+# 실패 집합 → 한 문장 판정 (첫 줄 굵게 부분). **평문**을 돌려준다 — 부르는 쪽이 h 로 한 번만 이스케이프(이중 이스케이프 방지)
 _fmt_verdict() {
   local f="$1"
   if _csv_has "$f" liveness && _csv_has "$f" robots; then printf '사이트 전체 접속 불가 (BE·FE 모두 무응답)'
@@ -146,12 +148,14 @@ _fmt_verdict() {
   elif _csv_has "$f" robots; then printf 'FE(웹) 응답 없음'
   elif _csv_has "$f" readiness || _csv_has "$f" categories; then printf 'DB 경유 조회 실패'
   elif _csv_has "$f" home; then printf '홈 화면(SSR) 렌더 실패'
-  elif [ -n "$f" ]; then printf '체크 실패: %s' "$(h "$f")"
+  elif [ -n "$f" ]; then printf '체크 실패: %s' "$f"
   else printf '실패 체크 없음'; fi
 }
 _FMT_DB_CHECKS="readiness,categories,home"
 
 # 결과 TSV → <pre> 표 + 실패 상세 줄. $1 results
+#   표는 원문으로 칸을 맞춘 뒤 통째로 h — 텔레그램은 &lt; 를 한 글자(<)로 보여 주므로 원문 기준 패딩이 화면 정렬과 같다
+#   (이스케이프 후 패딩하면 &lt; 가 4칸으로 세여 오히려 어긋난다 — 테스트 'pre 표 정렬')
 _fmt_results() {
   local file="$1" name ok code t detail rows dets=()
   [ -s "$file" ] || { printf '<i>(이번 실행 체크 결과 없음)</i>'; return; }
@@ -288,7 +292,7 @@ fmt_outage_expanded() { _fmt_outage "$@" kind=expanded; }
 # 🟢 복구 — ① 판정 ② 장애 요약 ③ 지금 체크 결과 ④ 링크
 # =============================================================================
 # 인자: results now mode issue run since(장애 시작) pass_at(1차 전부 통과) seen(이번 장애에서 실패했던 체크 누적)
-#       reopens(최근 12시간 재발 횟수) tag issue_text
+#       reopens(최근 12시간 재발 횟수) flap_hold(1=반복 장애 강화 close) flap_hold_min reopen_min tag issue_text
 fmt_recovered() {
   local -A a=(); _fmt_args a "$@"
   local now since pass_at seen="${a[seen]-}" tag="${a[tag]-}" down_min
@@ -297,18 +301,21 @@ fmt_recovered() {
   pass_at="$(_epoch "${a[pass_at]-}")"; pass_at="${pass_at:-$now}"
   down_min=$(( (pass_at - since) / 60 )); [ "$down_min" -ge 0 ] || down_min=0
 
+  local hold_min="${a[flap_hold_min]:-120}" reopen_h=$(( ${a[reopen_min]:-360} / 60 )) how="연속 2회 전부 통과"
+  # 반복 장애(flap-hold)는 close 조건이 '전부 통과가 hold_min 분 지속' 이다 (uptime.sh FLAP_HOLD_MIN)
+  [ "${a[flap_hold]-}" != "1" ] || how="전부 통과가 ${hold_min}분 이어짐 (반복 장애 강화 조건)"
   local -a L; L=("${tag}🟢 <b>simparty 복구 — 다운 약 $(fmt_dur "$down_min")</b>"
-     "$(fmt_when "$now" "$now") KST 확인 · 연속 2회 전부 통과")
+     "$(fmt_when "$now" "$now") KST 확인 · $how")
   L+=("" "<b>장애 요약</b>")
   L+=("· 시작 <code>$(fmt_when "$since" "$now")</code> → 첫 통과 <code>$(fmt_when "$pass_at" "$now")</code> → 복구 확정 <code>$(fmt_when "$now" "$now")</code> KST")
   if [ -n "$seen" ]; then
     L+=("· 실패했던 체크: $(_fmt_codes "$seen")")
-    L+=("· 그동안 영향: $(_fmt_verdict "$seen")")
+    L+=("· 그동안 영향: $(h "$(_fmt_verdict "$seen")")")
   fi
   local n="${a[reopens]:-0}"
   case "$n" in ''|*[!0-9]*) n=0 ;; esac
   [ "$n" -eq 0 ] || L+=("· 최근 12시간 재발 <code>$n</code>회 — 또 반복되면 재발·복구 알림은 억제됩니다")
-  L+=("· 장애 이슈는 지금 자동 close — 6시간 안에 재발하면 같은 이슈를 다시 엽니다")
+  L+=("· 장애 이슈는 지금 자동 close — ${reopen_h}시간 안에 재발하면 같은 이슈를 다시 엽니다")
   L+=("" "<b>지금 체크 결과</b> (${a[mode]:-?})" "$(_fmt_results "${a[results]-}")")
   local links; links="$(_fmt_links "${a[issue]-}" "${a[run]-}" "${a[issue_text]-}")"
   [ -z "$links" ] || L+=("" "$links")
@@ -407,6 +414,7 @@ fmt_brief() {
   local B_as_bad B_hj B_hnd B_fon B_hrs B_dj B_dratio B_dwhy B_actsrc B_pratio
   local B_site_known B_site_open B_inc_num B_inc_url B_inc_failed B_inc_since
   local B_up_at B_full_at B_up_max B_full_max B_up_bad B_full_bad B_runs B_full24 B_fullx B_dr B_df
+  local B_up_unknown B_up_fresh B_site_fresh_h
   local B_idle B_idle_warn B_idle_bad
   eval "$(jq -r '
     def s: if . == null then "" else tostring end;
@@ -423,6 +431,8 @@ fmt_brief() {
     kv("B_inc_num"; .site.number), kv("B_inc_url"; .site.url), kv("B_inc_failed"; .site.failed), kv("B_inc_since"; .site.since),
     kv("B_up_at"; .hb.uptime_at), kv("B_full_at"; .hb.full_at), kv("B_up_max"; .hb.uptime_max_h), kv("B_full_max"; .hb.full_max_h),
     kv("B_up_bad"; .hb.uptime_bad), kv("B_full_bad"; .hb.full_bad),
+    kv("B_up_unknown"; .hb.uptime_unknown // (.hb.uptime_at == null)), kv("B_up_fresh"; .hb.uptime_fresh // false),
+    kv("B_site_fresh_h"; .hb.site_fresh_h // 3),
     kv("B_runs"; .hb.runs24), kv("B_full24"; .hb.full24), kv("B_fullx"; .hb.full_exec24), kv("B_dr"; .hb.design_runs), kv("B_df"; .hb.design_full),
     kv("B_idle"; .repo.idle_days), kv("B_idle_warn"; .repo.warn_days), kv("B_idle_bad"; .repo.bad)
   ' "$json")"
@@ -439,7 +449,8 @@ fmt_brief() {
   fi
   if [ "$B_site_open" = "true" ]; then level=crit; if [ -n "$B_inc_failed" ]; then probs+=("사이트 장애 중 — ${B_inc_failed} 실패"); else probs+=("사이트 장애 중 — 복구 확인 대기"); fi; fi
   if [ "$B_over" = "true" ]; then [ "$level" = crit ] || level=warn; probs+=("Neon 예산 초과 예상 — \$${B_cost} / \$${B_budget}"); fi
-  if [ "$B_up_bad" = "true" ]; then [ "$level" = crit ] || level=warn; probs+=("업타임 감시가 ${B_up_max}시간 넘게 멈춤 — 장애를 못 잡는 상태"); fi
+  if [ "$B_up_unknown" = "true" ]; then [ "$level" = crit ] || level=warn; probs+=("업타임 감시 마지막 성공 확인 불가 — 감시가 도는지 직접 확인")
+  elif [ "$B_up_bad" = "true" ]; then [ "$level" = crit ] || level=warn; probs+=("업타임 감시가 ${B_up_max}시간 넘게 멈춤 — 장애를 못 잡는 상태"); fi
   if [ "$B_full_bad" = "true" ]; then [ "$level" = crit ] || level=warn; probs+=("DB 경유 체크가 ${B_full_max}시간 넘게 없음"); fi
   if [ "$B_idle_bad" = "true" ]; then [ "$level" = crit ] || level=warn; local left=$((60 - B_idle)); [ "$left" -ge 0 ] || left=0
     probs+=("저장소 ${B_idle}일 무커밋 — ${left}일 뒤 감시 스케줄 자동 정지"); fi
@@ -471,8 +482,13 @@ fmt_brief() {
       L+=("· 1차 전부 통과 — 다음 실행도 통과하면 🟢 복구 + close${since_e:+ ($(fmt_when "$since_e" "$now") 부터)}")
     fi
     [[ "$B_inc_url" == https://* ]] && L+=("· $(_fmt_links "$B_inc_url" "")")
-  else
+  elif [ "$B_up_fresh" = "true" ]; then
     L+=("<b>사이트</b> — ✅ 정상 (열린 장애 이슈 없음)")
+  elif [ -n "$B_up_at" ]; then
+    # 이슈가 없어도 감시가 오래 못 돌았으면 '정상' 이라고 말하지 않는다 — 그 사이 장애는 이슈가 안 열렸을 뿐일 수 있다
+    L+=("<b>사이트</b> — 열린 장애 이슈 없음 · 마지막 확인 $(fmt_ago $((now - B_up_at))) ⚠️ <i>(${B_site_fresh_h}시간 넘게 확인 없음 — 정상 여부 모름)</i>")
+  else
+    L+=("<b>사이트</b> — 열린 장애 이슈 없음 · 마지막 확인 기록 없음 ⚠️ <i>(정상 여부 모름)</i>")
   fi
   local up_line="BE liveness · FE robots 마지막 확인 "
   if [ -n "$B_up_at" ]; then up_line+="<code>$(fmt_when "$B_up_at" "$now")</code>"; else up_line+="기록 없음"; fi

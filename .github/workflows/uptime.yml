@@ -133,7 +133,9 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.SIMPARTY_TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.SIMPARTY_TELEGRAM_CHAT_ID }}
         run: |
-          # 템플릿 lib 가 있으면 그걸로(HTML), 체크아웃 실패로 없으면 인라인 plain 으로 보낸다.
+          # 1차: 템플릿 lib(fmt_selffail, HTML)를 **서브셸**에서 — lib·템플릿이 깨져(문법 오류·미정의 변수) source·렌더가
+          #      죽어도 이 스텝은 살아남는다. lib 는 템플릿이 깨졌으면 스스로 plain 형식으로 대체한다(monitor-lib.sh 머리말).
+          # 2차: 1차가 어떤 이유로든 실패하면(체크아웃 실패로 파일 없음·lib 자체 고장·전송 실패) 항상 인라인 plain 으로 보낸다.
           if [ -e "$RUNNER_TEMP/monitor_outage_alerted" ]; then
             echo "::warning::uptime.sh 가 이미 '🔴 장애 + 이슈 기록 실패' 를 텔레그램으로 보냄 — 감시 실패 알림 생략"; exit 0
           fi
@@ -148,12 +150,14 @@ jobs:
             echo "::error::텔레그램 시크릿 없음 — GitHub 실패 메일만 발송됨"; exit 0
           fi
           sent=0
-          if [ -f .github/scripts/monitor-lib.sh ] && [ -f .github/scripts/telegram-format.sh ]; then
-            # 정상 경로: 템플릿(fmt_selffail) + HTML (파싱 실패 시 tg_send 가 plain 재전송)
-            source .github/scripts/monitor-lib.sh
-            if tg_send "$(fmt_selffail workflow=uptime mode="${MODE:-?}" reason="$reason" run="$RUN_URL" suppress_h=6)"; then sent=1; fi
+          if ( set +e
+               source .github/scripts/monitor-lib.sh || exit 1
+               tg_render fmt_selffail workflow=uptime mode="${MODE:-?}" reason="$reason" run="$RUN_URL" suppress_h=6
+               [ -n "$TG_MSG" ] && tg_send "$TG_MSG" "$TG_MSG_PM" ); then
+            sent=1
           else
-            # 체크아웃 실패 대비: lib 없이 인라인 plain. 토큰은 stdin 설정으로만 전달
+            echo "::warning::템플릿 경로 실패 — 인라인 plain 으로 전송"
+            # lib 없이 인라인 plain. 토큰은 stdin 설정으로만 전달
             text="⚠️ 감시 자체 실패: uptime (${MODE:-?}) — 이후 6시간 같은 알림 억제
           ${reason}
           ${RUN_URL}"
@@ -163,10 +167,13 @@ jobs:
             echo "telegram HTTP ${http}"
             [ "$http" != "200" ] || sent=1
           fi
-          if [ "$sent" = "1" ]; then
-            mkdir -p .selffail && echo "$now" > .selffail/last && echo "saved=1" >> "$GITHUB_OUTPUT"
-          else
+          if [ "$sent" != "1" ]; then
             echo "::warning::감시 실패 알림 전송도 실패"
+          elif [ "${MODE:-}" = "test-alert" ]; then
+            # 수동 test-alert(샘플 연속 전송 중 429 등)의 실패는 6시간 억제 상태를 남기지 않는다 — 진짜 감시 실패 알림을 가리지 않게
+            echo "test-alert 실패 — 알림은 보냈지만 6시간 억제 상태는 저장하지 않음"
+          else
+            mkdir -p .selffail && echo "$now" > .selffail/last && echo "saved=1" >> "$GITHUB_OUTPUT"
           fi
 
       - name: 감시 상태 저장

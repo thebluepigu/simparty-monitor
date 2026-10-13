@@ -25,11 +25,16 @@ Neon(PostgreSQL) 사용량을 확인하고, 이상이 있으면 텔레그램으�
 - 장애가 이어지면 **6시간마다** 재알림. 이번 장애에서 아직 알리지 않은 체크가 새로 실패하면 **확대** 1건(직전 알림 후 1시간 이상일 때).
 - 🟢 복구: **연속 2회 전부 통과**해야 close. DB 경유 체크 실패는 full 재통과로만 close.
 - 복구 후 6시간 안 재발은 같은 이슈를 재오픈. 12시간 안 2번째 재발은 🟠 1건, 그 뒤는 억제하고 통과가 2시간 이어져야 close.
-- Neon 브리프: autosuspend 미작동 의심(24h 상시가동 ≥ 90% 등)·열린 장애 이슈 🔴, 기간말 예상 비용이 예산 초과·uptime 성공이
-  12시간 넘게 없음·DB 체크(full) 성공이 36시간 넘게 없음·저장소 마지막 커밋이 45일 이상 전 ⚠️ (아래 '60일 규칙').
-  첫 줄 이모지는 이런 **실제 문제**에만 붙습니다. GitHub cron 드롭(실측 간격이 설계 10분보다 훨씬 김)은 경보가 아니라
-  브리프 ⑤ 의 "최근 24h 정기 실행 N회 / 설계 144" 로만 보여 줍니다(2026-10-13, 예전 2h/14h 기준은 매일 ⚠️ 라 경보를 희석).
-- 감시 자체가 실패하면 '감시 자체 실패' 텔레그램을 6시간에 1건 보냅니다.
+- Neon 브리프: autosuspend 미작동 의심(24h 상시가동 ≥ 90% 등)·열린 장애 이슈 🔴, 기간말 예상 비용이 예산 초과·uptime
+  **정기** 성공이 6시간 넘게 없거나 확인 불가·DB 체크(full) 성공이 36시간 넘게 없음·저장소 마지막 커밋이 45일 이상 전 ⚠️
+  (아래 '60일 규칙'). 수동 test-alert 성공은 heartbeat 로 세지 않습니다(체크 없이 성공해 멈춘 스케줄을 가림).
+  ② 사이트의 "✅ 정상" 은 열린 장애 이슈가 없고 uptime 마지막 성공이 3시간 이내일 때만입니다. 그보다 오래됐으면
+  "열린 장애 이슈 없음 · 마지막 확인 N시간 전 ⚠️" — 감시가 멈춰 이슈가 안 열린 것일 수 있기 때문입니다.
+  첫 줄 이모지는 이런 **실제 문제**에만 붙습니다. GitHub cron 드롭(실측 간격 최대 ~3시간)은 경보가 아니라
+  브리프 ⑤ 의 "최근 24h 정기 실행 N회 / 설계 144" 로만 보여 줍니다(2026-10-13: 2h 는 매일 ⚠️ 라 경보를 희석, 12h 는
+  밤사이 멈춘 감시를 놓쳐 6h 로 정함). 기준은 repo variable `HB_UPTIME_MAX_H`·`HB_FULL_MAX_H`·`SITE_FRESH_H`.
+- 감시 자체가 실패하면 '감시 자체 실패' 텔레그램을 6시간에 1건 보냅니다. 수동 test-alert·preview 의 실패는 알림은 보내되
+  6시간 억제 상태를 남기지 않습니다(진짜 감시 실패 알림을 가리지 않게).
 
 ## incident 이슈 상태머신
 
@@ -61,7 +66,8 @@ Settings → Secrets and variables → Actions → **Secrets** 에 등록합니�
 | `SIMPARTY_NEON_API_KEY` | Neon control plane API 조회용 키 (`neon-usage.yml`) |
 
 선택 **Variables**(없으면 기본값): `NEON_PROJECT_ID`(없으면 이름 `simparty` 로 검색), `NEON_BUDGET_USD`(15),
-`NEON_CU_HOUR_USD`(0.106), `NEON_STORAGE_GB_USD`(0.35), `NEON_MIN_CU`(0.25), `REPO_IDLE_WARN_DAYS`(45).
+`NEON_CU_HOUR_USD`(0.106), `NEON_STORAGE_GB_USD`(0.35), `NEON_MIN_CU`(0.25), `REPO_IDLE_WARN_DAYS`(45),
+`HB_UPTIME_MAX_H`(6), `HB_FULL_MAX_H`(36), `SITE_FRESH_H`(3).
 Variables 값은 run 로그에 보이므로 비밀이 아닌 값만 둡니다.
 
 ## 왜 공개 repo 인가
@@ -72,7 +78,8 @@ Variables 값은 run 로그에 보이므로 비밀이 아닌 값만 둡니다.
 - 공개 repo 라 **run 로그·step summary·장애 이슈는 누구나 볼 수 있습니다.** 스크립트는 토큰을 로그에 찍지 않고,
   Neon 프로젝트·조직 id 는 로그에서 마스킹하고 step summary 에서는 아예 뺍니다.
 - ⚠️ 공개 repo 는 60일 동안 활동이 없으면 스케줄이 꺼집니다 — 아래 '60일 규칙' 참고.
-- 워크플로는 `schedule`·`workflow_dispatch` 로만 돌고 PR 트리거가 없습니다. 수동 실행은 write 권한자만 할 수 있습니다.
+- 감시 워크플로(`uptime.yml`·`neon-usage.yml`)는 `schedule`·`workflow_dispatch` 로만 돌고, 수동 실행은 write 권한자만 할 수
+  있습니다. `ci.yml`(문법·테스트)만 push·pull_request 로 돕니다 — 시크릿을 쓰지 않아 fork PR 에서 돌아도 안전합니다.
 
 ## 60일 규칙 (스케줄 자동 비활성)
 
@@ -124,9 +131,17 @@ gh workflow run neon-usage.yml -R thebluepigu/simparty-monitor -f mode=normal   
 
 1. 로컬에서 고치고 `bash .github/scripts/tests/telegram-format.test.sh` 로 렌더 전문·검사 결과 확인 (네트워크 호출 없음,
    `--plain` 은 텔레그램에 보이는 모습, `--quiet` 는 검사만)
-2. push 후 `-f mode=preview`(브리프)·`-f mode=test-alert`(알림 4종)로 실제 텔레그램에서 확인
+2. **문구 한 줄만 바꾸는 미세 조정도** 작업 브랜치에 push 해 CI(`ci.yml` — 모든 `*.sh` 의 `bash -n`, 워크플로 YAML 파싱,
+   위 테스트)가 초록인 것을 본 뒤 `main` 에 올립니다. 로컬에서는 `bash .github/scripts/tests/ci-check.sh` 가 같은 검사입니다.
+3. push 후 `-f mode=preview`(브리프)·`-f mode=test-alert`(알림 4종)로 실제 텔레그램에서 확인
 
 스케줄은 기본 브랜치(`main`)에 있는 워크플로 파일만 실행됩니다.
+
+**템플릿이 깨져도 알림은 갑니다.** `monitor-lib.sh` 가 `telegram-format.sh` 를 `bash -n`·시험 source 로 먼저 확인하고, 실패하면
+모든 메시지를 옛 plain 형식(제목 + 체크 표 + 이슈·run URL, 끝에 "ℹ️ 기본 형식 — 템플릿 오류로 대체" 표시)으로 보냅니다.
+렌더 중 오류(변수 오타 등)·빈 출력도 그 메시지만 같은 plain 형식으로 대체하고, 빈 본문은 아예 보내지 않습니다.
+이 경우 알림은 정상적으로 가지만 job 이 실패로 표시되어 GitHub 실패 메일과 '감시 자체 실패' ⚠️(사유: 템플릿 오류)가 옵니다.
+'감시 자체 실패' 스텝은 lib 를 서브셸에서 쓰고, 그것마저 실패하면 lib 없이 인라인 plain 으로 보냅니다.
 
 ## 구성
 
@@ -134,12 +149,13 @@ gh workflow run neon-usage.yml -R thebluepigu/simparty-monitor -f mode=normal   
 .github/
   workflows/uptime.yml       업타임 감시 (10분)
   workflows/neon-usage.yml   Neon 사용량 일일 브리프
+  workflows/ci.yml           push·PR 검사 (bash -n · YAML · 템플릿 테스트)
   scripts/uptime-mode.sh     quick/full 모드 결정 (DB 보호)
   scripts/uptime.sh          체크 + 장애 이슈·텔레그램 상태머신
   scripts/neon-usage.sh      Neon API 조회 + 브리프
-  scripts/monitor-lib.sh     공용 함수 (텔레그램 전송 — HTML·plain 재전송, KST 시각)
+  scripts/monitor-lib.sh     공용 함수 (텔레그램 전송 — HTML·plain 재전송, 템플릿 오류 시 plain 대체, KST 시각)
   scripts/telegram-format.sh 텔레그램 메시지 템플릿 (모든 본문 — 조정은 여기만)
-  scripts/tests/             템플릿 단위 테스트·렌더 미리보기 + Neon fixture
+  scripts/tests/             템플릿 단위·고장 주입 테스트, 렌더 미리보기, ci-check.sh + Neon fixture
 ```
 
 ⚠️ cron 문자열은 여러 곳이 같아야 합니다. full `4 2-14 * * *` 은 `uptime.yml` 의 `on.schedule`·`run-name`·
