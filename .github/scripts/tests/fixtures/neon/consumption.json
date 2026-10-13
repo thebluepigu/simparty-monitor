@@ -1,0 +1,136 @@
+{
+ "projects": [
+  {
+   "project_id": "proj-fixture",
+   "periods": [
+    {
+     "period_plan": "launch",
+     "period_start": "2026-10-01T00:00:00Z",
+     "period_end": "2026-11-01T00:00:00Z",
+     "consumption": [
+      {
+       "timeframe_start": "2026-10-01T00:00:00Z",
+       "timeframe_end": "x",
+       "metrics": [
+        {
+         "metric_name": "compute_unit_seconds",
+         "value": 3414
+        }
+       ]
+      },
+      {
+       "timeframe_start": "2026-10-02T00:00:00Z",
+       "timeframe_end": "x",
+       "metrics": [
+        {
+         "metric_name": "compute_unit_seconds",
+         "value": 3414
+        }
+       ]
+      },
+      {
+       "timeframe_start": "2026-10-03T00:00:00Z",
+       "timeframe_end": "x",
+       "metrics": [
+        {
+         "metric_name": "compute_unit_seconds",
+         "value": 3414
+        }
+       ]
+      },
+      {
+       "timeframe_start": "2026-10-04T00:00:00Z",
+       "timeframe_end": "x",
+       "metrics": [
+        {
+         "metric_name": "compute_unit_seconds",
+         "value": 3414
+        }
+       ]
+      },
+      {
+       "timeframe_start": "2026-10-05T00:00:00Z",
+       "timeframe_end": "x",
+       "metrics": [
+        {
+         "metric_name": "compute_unit_seconds",
+         "value": 3414
+        }
+       ]
+      },
+      {
+       "timeframe_start": "2026-10-06T00:00:00Z",
+       "timeframe_end": "x",
+       "metrics": [
+        {
+         "metric_name": "compute_unit_seconds",
+         "value": 3414
+        }
+       ]
+      },
+      {
+       "timeframe_start": "2026-10-07T00:00:00Z",
+       "timeframe_end": "x",
+       "metrics": [
+        {
+         "metric_name": "compute_unit_seconds",
+         "value": 3414
+        }
+       ]
+      },
+      {
+       "timeframe_start": "2026-10-08T00:00:00Z",
+       "timeframe_end": "x",
+       "metrics": [
+        {
+         "metric_name": "compute_unit_seconds",
+         "value": 3414
+        }
+       ]
+      },
+      {
+       "timeframe_start": "2026-10-09T00:00:00Z",
+       "timeframe_end": "x",
+       "metrics": [
+        {
+         "metric_name": "compute_unit_seconds",
+         "value": 3414
+        }
+       ]
+      },
+      {
+       "timeframe_start": "2026-10-10T00:00:00Z",
+       "timeframe_end": "x",
+       "metrics": [
+        {
+         "metric_name": "compute_unit_seconds",
+         "value": 3414
+        }
+       ]
+      },
+      {
+       "timeframe_start": "2026-10-11T00:00:00Z",
+       "timeframe_end": "x",
+       "metrics": [
+        {
+         "metric_name": "compute_unit_seconds",
+         "value": 3414
+        }
+       ]
+      },
+      {
+       "timeframe_start": "2026-10-12T00:00:00Z",
+       "timeframe_end": "x",
+       "metrics": [
+        {
+         "metric_name": "compute_unit_seconds",
+         "value": 3414
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

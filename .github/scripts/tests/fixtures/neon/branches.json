@@ -1,0 +1,16 @@
+{
+ "branches": [
+  {
+   "id": "br-main",
+   "name": "main",
+   "default": true,
+   "active_time_seconds": 150000
+  },
+  {
+   "id": "br-dev",
+   "name": "dev",
+   "default": false,
+   "active_time_seconds": 9000
+  }
+ ]
+}

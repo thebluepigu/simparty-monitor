@@ -1,0 +1,17 @@
+{
+ "project": {
+  "id": "proj-fixture",
+  "name": "simparty",
+  "org_id": "org-fixture",
+  "consumption_period_start": "2026-10-01T00:00:00Z",
+  "consumption_period_end": "2026-11-01T00:00:00Z",
+  "compute_time_seconds": 40968,
+  "active_time_seconds": 150000,
+  "data_transfer_bytes": 7000000,
+  "written_data_bytes": 12000000,
+  "synthetic_storage_size": 33000000,
+  "settings": {
+   "quota": {}
+  }
+ }
+}

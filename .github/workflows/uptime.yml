@@ -34,7 +34,8 @@ run-name: "uptime · ${{ github.event_name == 'workflow_dispatch' && inputs.mode
 # 정각(:00)은 GitHub 스케줄 부하 시간대라 지연·드롭이 잦아 x4분(04·14·…·54)으로 비킨다.
 # 공개 repo 라 run 로그·step summary·장애 이슈는 누구나 볼 수 있다 — 로그에 시크릿·응답 본문 외 내부 정보를 찍지 말 것.
 # 수동: Actions → 이 워크플로 → Run workflow → mode(quick | full | test-alert).
-#   test-alert 는 체크 없이 텔레그램 연동 확인 메시지 1건만 보낸다.
+#   test-alert 는 체크 없이 텔레그램 연동 확인 + 알림 서식 샘플 4종(🔴 감지·🟢 복구·⚠️ 감시 실패·🟠 반복)을 "[샘플]" 태그로
+#   연속 전송한다(fixture 렌더 — 이슈·상태 미변경). 문구 조정은 .github/scripts/telegram-format.sh 한 파일.
 # 상태: 이 repo 의 GitHub Issue — github-actions 봇이 만든 것 + 제목 '[uptime] 장애 감지' + label 'uptime-incident'(감시 전용.
 #   사람이 쓰는 일반 'incident' 라벨과 분리). open = 장애 중. 외부인이 같은 제목·마커로 만든 이슈는 무시(공개 repo).
 #   라벨을 못 만들면 이슈를 만들지 않고 감시 실패로 끝낸다(라벨 없는 이슈는 상태로 인정 안 함).
@@ -58,7 +59,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "quick(DB 미경유) | full(DB 경유, 영업시간·시간당 1회로 자동 제한) | test-alert(텔레그램 확인)"
+        description: "quick(DB 미경유) | full(DB 경유, 영업시간·시간당 1회로 자동 제한) | test-alert(텔레그램 확인 + 서식 샘플 4종)"
         required: true
         default: quick
         type: choice
@@ -132,7 +133,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.SIMPARTY_TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.SIMPARTY_TELEGRAM_CHAT_ID }}
         run: |
-          # 체크아웃 실패에도 동작하도록 lib 없이 인라인. 토큰은 stdin 설정으로만 전달.
+          # 템플릿 lib 가 있으면 그걸로(HTML), 체크아웃 실패로 없으면 인라인 plain 으로 보낸다.
           if [ -e "$RUNNER_TEMP/monitor_outage_alerted" ]; then
             echo "::warning::uptime.sh 가 이미 '🔴 장애 + 이슈 기록 실패' 를 텔레그램으로 보냄 — 감시 실패 알림 생략"; exit 0
           fi
@@ -143,17 +144,26 @@ jobs:
             echo "::warning::직전 감시 실패 알림 후 6시간 미만 — 텔레그램 생략 (GitHub 실패 메일은 발송됨)"; exit 0
           fi
           reason="$(tail -n 5 "$RUNNER_TEMP/monitor_fail_reason" 2>/dev/null || true)"
-          text="⚠️ 감시 자체 실패: uptime (${MODE:-?}) — 이후 6시간 같은 알림 억제
-          ${reason}
-          ${RUN_URL}"
           if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
             echo "::error::텔레그램 시크릿 없음 — GitHub 실패 메일만 발송됨"; exit 0
           fi
-          http="$(printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TELEGRAM_BOT_TOKEN" \
-            | curl -sS -K - -X POST --max-time 20 -o /dev/null -w '%{http_code}' \
-                --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" --data-urlencode "text=${text:0:4000}")" || http="000"
-          echo "telegram HTTP ${http}"
-          if [ "$http" = "200" ]; then
+          sent=0
+          if [ -f .github/scripts/monitor-lib.sh ] && [ -f .github/scripts/telegram-format.sh ]; then
+            # 정상 경로: 템플릿(fmt_selffail) + HTML (파싱 실패 시 tg_send 가 plain 재전송)
+            source .github/scripts/monitor-lib.sh
+            if tg_send "$(fmt_selffail workflow=uptime mode="${MODE:-?}" reason="$reason" run="$RUN_URL" suppress_h=6)"; then sent=1; fi
+          else
+            # 체크아웃 실패 대비: lib 없이 인라인 plain. 토큰은 stdin 설정으로만 전달
+            text="⚠️ 감시 자체 실패: uptime (${MODE:-?}) — 이후 6시간 같은 알림 억제
+          ${reason}
+          ${RUN_URL}"
+            http="$(printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TELEGRAM_BOT_TOKEN" \
+              | curl -sS -K - -X POST --max-time 20 -o /dev/null -w '%{http_code}' \
+                  --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" --data-urlencode "text=${text:0:4000}")" || http="000"
+            echo "telegram HTTP ${http}"
+            [ "$http" != "200" ] || sent=1
+          fi
+          if [ "$sent" = "1" ]; then
             mkdir -p .selffail && echo "$now" > .selffail/last && echo "saved=1" >> "$GITHUB_OUTPUT"
           else
             echo "::warning::감시 실패 알림 전송도 실패"

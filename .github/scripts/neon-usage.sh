@@ -9,7 +9,13 @@
 #   NOW_EPOCH (테스트 전용: 현재 시각 고정)
 #   NEON_MIN_CU (기본 0.25 — autoscaling 최소 CU, 시간별 상시가동 판정 기준)
 #   UPTIME_LAST_SUCCESS (옵션, ISO — uptime.yml 마지막 성공 실행 시각. 워크플로가 gh run list 로 넣어 줌)
-#   UPTIME_LAST_FULL (옵션, ISO — uptime.yml 이 DB 경유(full) 체크를 실제로 마친 마지막 시각) · HB_FULL_MAX_H (기본 14)
+#   UPTIME_LAST_FULL (옵션, ISO — uptime.yml 이 DB 경유(full) 체크를 실제로 마친 마지막 시각)
+#   HB_UPTIME_MAX_H (기본 12) · HB_FULL_MAX_H (기본 36) — 이 시간을 넘겨야 heartbeat ⚠️ (GitHub cron 드롭으로 실측 간격이
+#     설계 10분보다 훨씬 길어 예전 기준 2h/14h 는 매일 ⚠️ 가 붙어 진짜 경보를 희석했다 — 2026-10-13 완화)
+#   UPTIME_RUNS_24H · UPTIME_FULL_24H · UPTIME_FULL_EXEC_24H (옵션, 최근 24h 정기 실행 수·full 의도 수·DB체크 실제 수 — 드롭 정도 표시)
+#   UPTIME_DESIGN_RUNS (기본 144) · UPTIME_DESIGN_FULL (기본 13) — 설계상 하루 실행 수
+#   UPTIME_INCIDENT (옵션, JSON — 열린 장애 이슈 {"open":false} | {"open":true,"number","url","failed","since"}, 빈 값 = 확인 불가)
+#   BRIEF_MODE (normal | preview) — preview 는 첫 줄에 "[미리보기] ", 상태(판정 기준점) 저장 안 함
 #   REPO_LAST_COMMIT_EPOCH (옵션, epoch — 이 저장소 마지막 커밋 시각. 워크플로가 git log -1 로 넣어 줌)
 #   REPO_IDLE_WARN_DAYS (기본 45 — 이 일수 이상이면 ⚠️. 공개 repo 는 60일 무활동 시 schedule 자동 비활성)
 #
@@ -270,75 +276,81 @@ cat "$WORK/report.json"
 
 # 다음 실행용 상태 저장 (active_time 없으면 저장 안 함).
 # 간격 부족으로 판정을 건너뛴 실행(수동 실행 등)은 기준점을 덮지 않는다 — 덮으면 다음 날 정기 실행도 20h 미만이 돼 연쇄 생략
-jq -c --argjson now "$NOW" 'select((.autosuspend.keep_prev // false) | not)
-  | {ts: $now, active_time_seconds: .active_time_seconds, act_src: .act_src, period_start: .period_start}
-  | select(.active_time_seconds != null)' "$WORK/report.json" > "$WORK/state.new"
-if [ -s "$WORK/state.new" ]; then cp "$WORK/state.new" "$STATE"; echo "상태 저장: $(cat "$STATE")"; fi
+# preview 는 판정 기준점을 절대 갱신하지 않는다(워크플로도 캐시 저장 스텝을 건너뜀)
+BRIEF_MODE="${BRIEF_MODE:-normal}"
+case "$BRIEF_MODE" in normal|preview) ;; *) echo "::warning::알 수 없는 BRIEF_MODE '$BRIEF_MODE' — normal 로 진행"; BRIEF_MODE=normal ;; esac
+if [ "$BRIEF_MODE" = "preview" ]; then
+  echo "preview — 상태(판정 기준점) 저장 생략"
+else
+  jq -c --argjson now "$NOW" 'select((.autosuspend.keep_prev // false) | not)
+    | {ts: $now, active_time_seconds: .active_time_seconds, act_src: .act_src, period_start: .period_start}
+    | select(.active_time_seconds != null)' "$WORK/report.json" > "$WORK/state.new"
+  if [ -s "$WORK/state.new" ]; then cp "$WORK/state.new" "$STATE"; echo "상태 저장: $(cat "$STATE")"; fi
+fi
 
-# ---- 5) 텔레그램 브리프 (6줄) ------------------------------------------------
-# uptime.yml heartbeat — 감시 워크플로 자체가 멈춰도(비활성화·YAML 깨짐·스케줄 누락) 여기서 드러나게
-hours_ago() { [ -n "$1" ] || return 0; jq -rn --arg t "$1" --argjson now "$NOW" '(($now - ($t | fromdateiso8601)) / 3600) * 10 | floor / 10' 2>/dev/null || true; }
-HB_H="$(hours_ago "${UPTIME_LAST_SUCCESS:-}")"
-# DB 경유(full) 체크 heartbeat — DB 장애를 잡는 경로는 full 뿐이라, cron 문자열 불일치 등으로 full 이 영영
-# 강등돼도 "uptime 성공" 만으로는 ✅ 로 남는다. full 은 KST 11:04~23:04 에만 돌아 09:17 브리프 시점 정상 간격은
-# ~10시간 → HB_FULL_MAX_H(기본 14) 초과면 ⚠️.
-HB_FULL_H="$(hours_ago "${UPTIME_LAST_FULL:-}")"
-HB_FULL_MAX_H="${HB_FULL_MAX_H:-14}"
+# ---- 5) 텔레그램 브리프 -------------------------------------------------------
+# 여기서는 값과 판정 플래그만 계산해 brief.json 으로 넘기고, 문구·구조는 telegram-format.sh 의 fmt_brief 가 만든다.
+# heartbeat — 감시 워크플로 자체가 멈춰도(비활성화·YAML 깨짐·스케줄 누락) 여기서 드러나게.
+#   uptime 마지막 성공이 HB_UPTIME_MAX_H(12h) 넘게 전, DB 경유(full) 마지막 성공이 HB_FULL_MAX_H(36h) 넘게 전이면 ⚠️.
+#   (full 은 KST 11:04~23:04 에만 돌아 09:17 브리프 시점 정상 간격 ~10h, 여기에 cron 드롭 여유 → 36h = 하루 반 동안 full 0회)
 # 저장소 마지막 커밋 경과일 — 공개 repo 는 60일 무활동이면 GitHub 가 schedule 워크플로(이 브리프 포함)를 자동으로 끈다.
-# 자동 빈 커밋(keepalive)은 GitHub 가 약관 위반으로 막은 전례가 있어 쓰지 않는다 → 45일부터 매일 ⚠️ 로 사람에게 알려
-# 남은 ~15일 안에 사소한 커밋 1건을 하게 한다. 값이 없거나 숫자가 아니면 "확인 불가 ⚠️" (조용히 넘어가지 않게).
+#   자동 빈 커밋(keepalive)은 GitHub 가 약관 위반으로 막은 전례가 있어 쓰지 않는다 → 45일부터 ⚠️ 로 사람에게 알린다.
+#   값이 없거나 숫자가 아니면 "확인 불가 ⚠️" (조용히 넘어가지 않게, 단 첫 줄 판정에는 반영 안 함).
+HB_UPTIME_MAX_H="${HB_UPTIME_MAX_H:-12}"; HB_FULL_MAX_H="${HB_FULL_MAX_H:-36}"
 REPO_IDLE_WARN_DAYS="${REPO_IDLE_WARN_DAYS:-45}"
-case "$REPO_IDLE_WARN_DAYS" in ''|*[!0-9]*) REPO_IDLE_WARN_DAYS=45 ;; esac
+for v in HB_UPTIME_MAX_H HB_FULL_MAX_H REPO_IDLE_WARN_DAYS; do
+  case "${!v}" in ''|*[!0-9]*) echo "::warning::$v='${!v}' 숫자 아님 — 기본값"; case "$v" in HB_UPTIME_MAX_H) HB_UPTIME_MAX_H=12 ;; HB_FULL_MAX_H) HB_FULL_MAX_H=36 ;; *) REPO_IDLE_WARN_DAYS=45 ;; esac ;; esac
+done
+iso_epoch() { [ -n "${1:-}" ] || return 0; date -u -d "$1" +%s 2>/dev/null || true; }
+num_or_empty() { case "${1:-}" in ''|*[!0-9]*) ;; *) printf '%s' "$1" ;; esac; }
 LC_DAYS=""
 case "${REPO_LAST_COMMIT_EPOCH:-}" in
   ''|*[!0-9]*) ;;
   *) LC_DAYS=$(( (NOW - REPO_LAST_COMMIT_EPOCH) / 86400 )); [ "$LC_DAYS" -ge 0 ] || LC_DAYS=0 ;;
 esac
+INCIDENT="${UPTIME_INCIDENT:-}"
+if [ -n "$INCIDENT" ] && ! jq -e 'type == "object" and has("open")' <<< "$INCIDENT" >/dev/null 2>&1; then
+  echo "::warning::UPTIME_INCIDENT 형식 오류 — 사이트 상태 '확인 불가'"; INCIDENT=""
+fi
 
-MSG="$(jq -r --arg note "$PERIOD_NOTE" --arg kst "$(date -u -d "@$((NOW + 32400))" '+%m-%d')" --arg hb "$HB_H" --arg hbf "$HB_FULL_H" --argjson hbf_max "$HB_FULL_MAX_H" \
-  --arg lcd "$LC_DAYS" --argjson idle_warn "$REPO_IDLE_WARN_DAYS" '
-  def n(x): if x == null then "n/a" else (x | tostring) end;
-  def pct(x): ((x * 100) | round | tostring) + "%";
-  (.autosuspend.state == "judge" and (.autosuspend.ok | not)) as $delta_bad
-  | (.hourly != null and ((.hourly.nodata // false) | not)) as $hour_judged
-  | ($hour_judged and (.hourly.ok | not)) as $hour_bad
-  | ($delta_bad or $hour_bad) as $as_bad
-  | (($hb == "" or ($hb | tonumber) > 2) or ($hbf == "" or ($hbf | tonumber) > $hbf_max)) as $hb_bad
-  | ($lcd == "" or ($lcd | tonumber) >= $idle_warn) as $idle_bad
-  | (if $as_bad then "🔴" elif (.over_budget or $hb_bad or $idle_bad) then "⚠️" else "✅" end) as $head
-  | (if .act_src == "branch" then "기본 브랜치" else "프로젝트 합계" end) as $act_label
-  | (if $hour_judged then "24h 상시가동 \(.hourly.full_on)/\(.hourly.hours)시간(프로젝트 합계)"
-     elif .hourly != null then "24h 시간별 데이터 없음(종일 수면 또는 API 형식 변경 — 판정 불가)" else "" end) as $hour_txt
-  | (if .autosuspend.state == "judge" then "\($act_label) 직전 대비 가동률 \(pct(.autosuspend.ratio))"
-     else "\($act_label) \(.autosuspend.why)\(if .period_active_ratio != null then ", 기간 평균 \(pct(.period_active_ratio))" else "" end)" end) as $delta_txt
-  | ([$hour_txt, $delta_txt] | map(select(. != "")) | join(" · ")) as $as_txt
-  | (if $hb == "" then "uptime 성공 기록 없음 ⚠️" else "uptime \($hb)h 전\(if ($hb | tonumber) > 2 then " ⚠️" else "" end)" end) as $hb1
-  | (if $hbf == "" then "DB체크(full) 기록 없음 ⚠️" else "DB체크 \($hbf)h 전\(if ($hbf | tonumber) > $hbf_max then " ⚠️" else "" end)" end) as $hb2
-  | "감시 heartbeat: \($hb1) · \($hb2)" as $hb_txt
-  | (if .cu_src == "v2" then "" else "≈" end) as $apx
-  | [
-      "\($head) Neon \(.project_name // "?") 브리프 \($kst) (기간 \(.elapsed_days)/\(.total_days)일)\(if $note != "" then " " + $note else "" end)",
-      "CU-h: \($apx)\(.cu_hours) 누적 → 기간말 예상 \($apx)\(n(.projected_cu_hours))\(if .quota_compute_pct != null then " · quota \(.quota_compute_pct)%" else "" end)",
-      "예상 $: \(if .projected_cost_usd == null then "n/a (기간 시작 1일 미만 — 외삽 생략)" else (.projected_cost_usd | tostring) end) / 예산 $\(.budget_usd)\(if .over_budget then " ⚠️ 초과" else "" end)",
-      "전송 \(.transfer_gb) GB · 스토리지 \(.storage_gb) GB · \($hb_txt)",
-      (if $as_bad then "판정: 🔴 autosuspend 미작동 의심 (≥ 90%) — \($as_txt)"
-       elif ($hour_judged or .autosuspend.state == "judge") then "판정: ✅ autosuspend 정상 — \($as_txt)"
-       else "판정: ⏭ \($as_txt)" end),
-      (if $lcd == "" then "저장소 마지막 커밋: 확인 불가 ⚠️ (60일 무활동 시 스케줄 자동 비활성 — 최근 커밋 직접 확인)"
-       elif $idle_bad then "저장소 마지막 커밋 \($lcd)일 전 ⚠️ 60일 무활동 시 스케줄 자동 비활성 — 사소한 커밋 1건 필요"
-       else "저장소 마지막 커밋 \($lcd)일 전" end)
-    ] | join("\n")' "$WORK/report.json")"
+jq -n --slurpfile r "$WORK/report.json" --argjson now "$NOW" --arg mode "$BRIEF_MODE" --arg note "$PERIOD_NOTE"   --arg up_at "$(iso_epoch "${UPTIME_LAST_SUCCESS:-}")" --arg full_at "$(iso_epoch "${UPTIME_LAST_FULL:-}")"   --argjson up_max "$HB_UPTIME_MAX_H" --argjson full_max "$HB_FULL_MAX_H"   --arg runs "$(num_or_empty "${UPTIME_RUNS_24H:-}")" --arg full24 "$(num_or_empty "${UPTIME_FULL_24H:-}")"   --arg fullx "$(num_or_empty "${UPTIME_FULL_EXEC_24H:-}")"   --argjson dr "${UPTIME_DESIGN_RUNS:-144}" --argjson df "${UPTIME_DESIGN_FULL:-13}"   --arg inc "$INCIDENT" --arg lcd "$LC_DAYS" --argjson idle_warn "$REPO_IDLE_WARN_DAYS" '
+  def num($s): if $s == "" then null else ($s | tonumber) end;
+  $r[0] as $p
+  | ($p.autosuspend.state == "judge" and ($p.autosuspend.ok | not)) as $delta_bad
+  | ($p.hourly != null and (($p.hourly.nodata // false) | not)) as $hour_judged
+  | ($hour_judged and ($p.hourly.ok | not)) as $hour_bad
+  | num($up_at) as $ua | num($full_at) as $fa | num($lcd) as $idle
+  | {
+      now: $now, preview: ($mode == "preview"), project: ($p.project_name // "?"),
+      period: {elapsed: $p.elapsed_days, total: $p.total_days, note: $note},
+      cu: {approx: ($p.cu_src != "v2"), hours: $p.cu_hours, projected: $p.projected_cu_hours, quota_pct: $p.quota_compute_pct},
+      cost: {projected: $p.projected_cost_usd, budget: $p.budget_usd, over: $p.over_budget},
+      transfer_gb: $p.transfer_gb, storage_gb: $p.storage_gb,
+      as: {bad: ($delta_bad or $hour_bad), hour_judged: $hour_judged,
+           hour_nodata: ($p.hourly != null and ($p.hourly.nodata // false)),
+           full_on: $p.hourly.full_on, hours: $p.hourly.hours,
+           delta_judged: ($p.autosuspend.state == "judge"), delta_ratio: $p.autosuspend.ratio, delta_why: $p.autosuspend.why,
+           act_src: $p.act_src, period_ratio: $p.period_active_ratio},
+      site: (if $inc == "" then null else ($inc | fromjson) end),
+      hb: {uptime_at: $ua, full_at: $fa, uptime_max_h: $up_max, full_max_h: $full_max,
+           uptime_bad: ($ua != null and ($now - $ua) > $up_max * 3600),
+           full_bad: ($fa != null and ($now - $fa) > $full_max * 3600),
+           runs24: num($runs), full24: num($full24), full_exec24: num($fullx), design_runs: $dr, design_full: $df},
+      repo: {idle_days: $idle, warn_days: $idle_warn, bad: ($idle != null and $idle >= $idle_warn)}
+    }' > "$WORK/brief.json"
+
+MSG="$(fmt_brief json="$WORK/brief.json")"
 
 echo "----"; echo "$MSG"; echo "----"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   # step summary 는 add-mask 대상이 아닐 수 있고 공개 repo 에서 누구나 본다 → 프로젝트·조직 id 는 빼고 기록
-  { echo "### Neon 사용량"; echo '```'; echo "$MSG"; echo '```'; echo '```json'; jq 'del(.project_id, .org_id)' "$WORK/report.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+  { echo "### Neon 사용량"; echo '```'; html_to_plain "$MSG"; echo; echo '```'; echo '```json'; jq 'del(.project_id, .org_id)' "$WORK/report.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 fi
 
 if [ "${DRY_RUN:-0}" = "1" ]; then echo "DRY_RUN — 텔레그램 생략"; exit 0; fi
 # 실패 사유 파일은 비우지 않는다 — tg_send 가 남긴 HTTP 코드·migrate_to_chat_id 안내가 '감시 자체 실패' 알림에 실려야 함
 # (RUNNER_TEMP 는 job 마다 새로 만들어져 이전 실행 잔여물이 없다)
-tg_send "$MSG
-${RUN_URL}" || true
+# 실행 로그 링크는 브리프에 넣지 않는다(매일 오는 메시지라 군더더기) — 필요하면 step summary·Actions 탭
+tg_send "$MSG" || true
 if [ "$TG_FAILED" = "1" ]; then note_fail "텔레그램 전송 실패"; echo "::error::텔레그램 전송 실패"; exit 1; fi
 exit 0

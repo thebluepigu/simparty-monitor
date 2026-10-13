@@ -3,7 +3,9 @@
 #
 #   quick : DB 를 건드리지 않는 체크만 (liveness, robots.txt)
 #   full  : quick + DB 경유 체크 (readiness, /simparty/categories, SSR 홈) — 시간당 1회·영업시간만 (uptime-mode.sh 가 강제)
-#   test-alert : 체크 없이 텔레그램 연동 확인 메시지 1건
+#   test-alert : 체크 없이 텔레그램 연동 확인 + 알림 서식 샘플 4종(🔴·🟢·⚠️·🟠, "[샘플]" 태그 — 이슈·상태 미변경)
+#
+# 텔레그램 본문은 전부 telegram-format.sh 의 fmt_* 가 만든다(이 파일은 값만 넘긴다). 문구 조정은 그 파일에서.
 #
 # 상태 머신 = GitHub Issue. **이 감시(github-actions 봇)가 만든** 이슈 중 제목에 '[uptime] 장애 감지' 가 있고
 # label 'uptime-incident' 가 붙은 open 이슈가 "장애 중". 세 조건(봇 작성자 AND 라벨 AND 제목) 중 하나라도 빠지면(또는 PR 이면) 무시한다.
@@ -74,7 +76,8 @@ URL_HOME="${URL_HOME:-https://simparty.shop/}"
 : > "$FAIL_FILE"
 rm -f "$OUTAGE_FLAG"
 
-STAGE="init"; DONE=0; FAILED_NOW=""; TABLE=""; NOW_KST="$(kst_now)"; TG_SENT_RUN=0
+STAGE="init"; DONE=0; FAILED_NOW=""; TABLE=""; NOW_KST="$(kst_now)"; NOW_EPOCH="$(date -u +%s)"; TG_SENT_RUN=0
+RESULTS=""   # 체크 결과 TSV (WORK 생성 후 지정) — on_exit 의 직접 🔴 도 이 파일로 렌더
 iso_now() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
 
 # 이슈 API 지속 실패 중 직접 🔴 간격: 직전 직접 알림 횟수 0→즉시, 1→1h, 2→3h, 3+→6h (24시간 조용하면 횟수 리셋)
@@ -107,9 +110,7 @@ on_exit() {
     gap="$(selffail_interval "$cnt")"
     if [ $((now - last)) -lt "$gap" ]; then
       echo "::warning::상태 기록 실패 + 장애 — 직전 직접 알림(${cnt}회째) 후 $((gap / 3600))시간 미만이라 생략"
-    elif tg_send "🔴 simparty 장애 감지 (${NOW_KST} KST) — ⚠️ GitHub 이슈 기록 실패로 상태 추적 불가, 계속되면 1→3→6시간 간격으로 반복
-${TABLE}
-${RUN_URL}"; then
+    elif tg_send "$(fmt_outage_detected kind=selffail results="$RESULTS" now="$NOW_EPOCH" mode="$MODE" run="$RUN_URL")"; then
       record_direct_alert "$now" $((cnt + 1))
       : > "$OUTAGE_FLAG"
     fi
@@ -144,9 +145,13 @@ finish() {
 }
 
 if [ "$MODE" = "test-alert" ]; then
-  tg_send "🧪 test — simparty 업타임 감시 텔레그램 연동 확인 ($(kst_now) KST)
-${RUN_URL}" || true
-  if [ "$TG_FAILED" = "0" ]; then echo "텔레그램 test 전송 성공"; fi
+  # 머리 메시지 + 샘플 4종. fixture 렌더라 체크·이슈·상태(selffail 캐시)를 건드리지 않는다
+  if tg_send "$(fmt_test now="$NOW_EPOCH" run="$RUN_URL")"; then
+    for k in detected recovered selffail flap; do
+      tg_send "$(fmt_sample "$k" now="$NOW_EPOCH" run="$RUN_URL" repo="${GH_REPO:-thebluepigu/simparty-monitor}")" || true
+    done
+  fi
+  if [ "$TG_FAILED" = "0" ]; then echo "텔레그램 test·샘플 4종 전송 성공"; fi
   finish
 fi
 case "$MODE" in
@@ -344,19 +349,15 @@ if [ -z "$ISSUE" ]; then
     REOPENS="$(recent_times "$(body_marker reopens)" "$FLAP_WINDOW_SEC")"
     REOPENS_WIN="$(count_list "$REOPENS")"
     MARK=""
+    # 텔레그램 공통 값 (본문은 telegram-format.sh)
+    TGV=(results="$RESULTS" now="$NOW_EPOCH" mode="$MODE" issue="$ISSUE_URL" run="$RUN_URL" since="$NOW_ISO"
+         remind_h="$REMIND_HOURS" reopen_min="$REOPEN_MINUTES" flap_hold_min="$FLAP_HOLD_MIN")
     if [ "$REOPENS_WIN" = "0" ]; then
-      if alert "🔴 simparty 장애 재발 (${NOW_KST} KST, 복구 후 $((REOPEN_MINUTES / 60))시간 안)
-${TABLE}
-이슈: ${ISSUE_URL}"; then MARK="📨 텔레그램 재발 알림"; fi
+      if alert "$(fmt_outage_detected kind=reopen "${TGV[@]}")"; then MARK="📨 텔레그램 재발 알림"; fi
     elif [ "$REOPENS_WIN" = "1" ]; then
-      if alert "🟠 simparty 장애·복구 반복 (${NOW_KST} KST) — 12시간 안 재발 2회째
-이후 재발·복구 텔레그램은 억제하고, 장애가 이어지면 ${REMIND_HOURS}시간마다만 재알림합니다.
-${TABLE}
-이슈: ${ISSUE_URL}"; then MARK="📨 텔레그램 반복 알림"; fi
+      if alert "$(fmt_flap "${TGV[@]}")"; then MARK="📨 텔레그램 반복 알림"; fi
     elif [ "$(hours_passed "$LAST_TG" "$REMIND_HOURS")" = "yes" ]; then
-      if alert "🔴 simparty 장애 반복 중 (${NOW_KST} KST, ${REMIND_HOURS}시간 재알림)
-${TABLE}
-이슈: ${ISSUE_URL}"; then MARK="📨 텔레그램 재알림"; fi
+      if alert "$(fmt_outage_ongoing kind=flap_remind "${TGV[@]}")"; then MARK="📨 텔레그램 재알림"; fi
     else
       echo "플래핑 억제 — 12시간 내 이전 재발 ${REOPENS_WIN}회, 텔레그램 생략"
     fi
@@ -393,9 +394,7 @@ ${TABLE}
   URL="$(gh issue create --title "$TITLE" --body "$BODY" --label "$LABEL")"
   NUM="${URL##*/}"
   echo "장애 이슈 생성: $URL"
-  alert "🔴 simparty 장애 감지 (${NOW_KST} KST)
-${TABLE}
-이슈: ${URL}" || true
+  alert "$(fmt_outage_detected kind=new results="$RESULTS" now="$NOW_EPOCH" mode="$MODE" issue="$URL" run="$RUN_URL"     since="$NOW_ISO" remind_h="$REMIND_HOURS")" || true
   # 이슈 생성 자체가 GitHub 알림 1건 — 전송 결과는 본문 마커로만 (코멘트 생략)
   load_view "$NUM"
   tg_markers
@@ -450,11 +449,9 @@ if [ -z "$FAILED_SET" ]; then
   OK_AT=""
   # 🟢 는 풀리지 않은 🔴/🟠 가 있을 때만 (플래핑 억제로 🔴 를 생략했다면 🟢 도 생략)
   if [ "$(ts_gt "$LAST_TG" "$LAST_OK_TG")" = "yes" ]; then
-    FLAP_NOTE=""
-    if [ "$REOPENS_WIN" != "0" ]; then FLAP_NOTE="
-(최근 12시간 재발 ${REOPENS_WIN}회 — 반복되면 재발·복구 알림은 억제됨)"; fi
-    if alert "🟢 simparty 복구 (다운 약 ${MIN}분, ${NOW_KST} KST 확인)${FLAP_NOTE}
-${ISSUE_URL}"; then OK_AT="$TG_AT"; TG_AT=""; fi
+    if alert "$(fmt_recovered results="$RESULTS" now="$NOW_EPOCH" mode="$MODE" issue="$ISSUE_URL" run="$RUN_URL"         since="$DOWN_SINCE" pass_at="$PENDING" seen="$(set_union "$SEEN" "$PREV_FAILED")" reopens="$REOPENS_WIN")"; then
+      OK_AT="$TG_AT"; TG_AT=""
+    fi
   else
     echo "알리지 않은 장애(플래핑 억제·전송 실패) — 🟢 텔레그램 생략"
   fi
@@ -476,7 +473,7 @@ fi
 #   (2) 마지막 🔴 후 REMIND_HOURS 경과 → 재알림 (직전 전송 실패 후 1시간 이내면 보류)
 #   (3) 이번 장애에서 아직 알리지 않은 체크(alerted 밖)가 새로 실패(악화) → 확대 알림 (직전 텔레그램/시도 후 1시간 이상일 때만)
 # 코멘트는 텔레그램을 보냈을 때와 seen(누적 실패 집합)이 커질 때만. 그 외 변화는 본문 마커로만.
-HEAD=""
+HEAD=""   # 보낼 알림 종류: retry | remind | expanded (빈 값 = 보내지 않음)
 NEW_FAILS=""
 if [ -n "$FAILED_NOW" ]; then
   NEW_FAILS="$(set_minus "$FAILED_NOW" "$ALERTED")"
@@ -484,20 +481,21 @@ if [ -n "$FAILED_NOW" ]; then
   if set_has "$ALERTED" liveness; then NEW_FAILS="$(set_minus "$NEW_FAILS" "$FULL_ONLY")"; fi
   LAST_ANY="$(ts_max "$LAST_TG" "$LAST_ATTEMPT")"
   ATTEMPT_OK="$(hours_passed "$LAST_ATTEMPT" 1)"
-  MIN="$(minutes_between "$DOWN_SINCE" "")"
   if [ "$(ts_gt "$LAST_ATTEMPT" "$LAST_TG")" = "yes" ] && [ "$ATTEMPT_OK" = "yes" ]; then
-    HEAD="🔴 simparty 장애 지속 (다운 약 ${MIN}분, ${NOW_KST} KST — 직전 알림 전송 실패분 재시도)"
+    HEAD="retry"
   elif [ "$(hours_passed "$LAST_TG" "$REMIND_HOURS")" = "yes" ] && [ "$ATTEMPT_OK" = "yes" ]; then
-    HEAD="🔴 simparty 장애 지속 (다운 약 ${MIN}분, ${NOW_KST} KST)"
+    HEAD="remind"
   elif [ -n "$NEW_FAILS" ] && [ "$(hours_passed "$LAST_ANY" 1)" = "yes" ]; then
-    HEAD="🔴 simparty 장애 확대 — 새로 실패: ${NEW_FAILS} (다운 약 ${MIN}분, ${NOW_KST} KST)"
+    HEAD="expanded"
   fi
 fi
 SENT=0
 if [ -n "$HEAD" ]; then
-  if alert "${HEAD}
-${TABLE}
-이슈: ${ISSUE_URL}"; then SENT=1; fi
+  TGV=(results="$RESULTS" now="$NOW_EPOCH" mode="$MODE" issue="$ISSUE_URL" run="$RUN_URL" since="$DOWN_SINCE"
+       failed="$(set_norm "$FAILED_SET")" remind_h="$REMIND_HOURS" flap_hold="$FLAPPY" flap_hold_min="$FLAP_HOLD_MIN")
+  if [ "$HEAD" = "expanded" ]; then MSG="$(fmt_outage_expanded new_fails="$NEW_FAILS" "${TGV[@]}")"
+  else MSG="$(fmt_outage_ongoing kind="$HEAD" "${TGV[@]}")"; fi
+  if alert "$MSG"; then SENT=1; fi
 fi
 NEW_ALERTED="$(set_norm "$ALERTED")"
 if [ "$SENT" = "1" ]; then NEW_ALERTED="$(set_union "$ALERTED" "$FAILED_NOW")"; fi

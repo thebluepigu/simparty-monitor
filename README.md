@@ -25,8 +25,10 @@ Neon(PostgreSQL) 사용량을 확인하고, 이상이 있으면 텔레그램으�
 - 장애가 이어지면 **6시간마다** 재알림. 이번 장애에서 아직 알리지 않은 체크가 새로 실패하면 **확대** 1건(직전 알림 후 1시간 이상일 때).
 - 🟢 복구: **연속 2회 전부 통과**해야 close. DB 경유 체크 실패는 full 재통과로만 close.
 - 복구 후 6시간 안 재발은 같은 이슈를 재오픈. 12시간 안 2번째 재발은 🟠 1건, 그 뒤는 억제하고 통과가 2시간 이어져야 close.
-- Neon 브리프: autosuspend 미작동 의심(24h 상시가동 ≥ 90% 등) 🔴, 기간말 예상 비용이 예산 초과·uptime 성공이 2시간 넘게 없음·
-  DB 체크(full) 성공이 14시간 넘게 없음·저장소 마지막 커밋이 45일 이상 전 ⚠️ (아래 '60일 규칙').
+- Neon 브리프: autosuspend 미작동 의심(24h 상시가동 ≥ 90% 등)·열린 장애 이슈 🔴, 기간말 예상 비용이 예산 초과·uptime 성공이
+  12시간 넘게 없음·DB 체크(full) 성공이 36시간 넘게 없음·저장소 마지막 커밋이 45일 이상 전 ⚠️ (아래 '60일 규칙').
+  첫 줄 이모지는 이런 **실제 문제**에만 붙습니다. GitHub cron 드롭(실측 간격이 설계 10분보다 훨씬 김)은 경보가 아니라
+  브리프 ⑤ 의 "최근 24h 정기 실행 N회 / 설계 144" 로만 보여 줍니다(2026-10-13, 예전 2h/14h 기준은 매일 ⚠️ 라 경보를 희석).
 - 감시 자체가 실패하면 '감시 자체 실패' 텔레그램을 6시간에 1건 보냅니다.
 
 ## incident 이슈 상태머신
@@ -80,8 +82,8 @@ Variables 값은 run 로그에 보이므로 비밀이 아닌 값만 둡니다.
 - **자동 빈 커밋(keepalive 워크플로)은 쓰지 않습니다.** 같은 방식의 공개 액션 repo 를 GitHub Staff 가 비활성화했고,
   60일 정책을 우회한다는 이유가 인용된 전례가 있습니다. 감시 repo 나 Actions 자체가 막히면 감시가 소리 없이 전부 멈춥니다.
   또 봇 커밋이 60일 타이머를 리셋한다는 공식 근거도 없습니다.
-- 대신 **Neon 일일 브리프 마지막 줄**에 `저장소 마지막 커밋 N일 전` 이 매일 찍힙니다(기본 브랜치 HEAD 커밋 시각).
-  **45일 이상**이면 브리프 첫 줄이 ⚠️ 가 되고 `60일 무활동 시 스케줄 자동 비활성 — 사소한 커밋 1건 필요` 가 붙습니다.
+- 대신 **Neon 일일 브리프 '감시 자체' 문단**에 `저장소 마지막 커밋 N일 전` 이 매일 찍힙니다(기본 브랜치 HEAD 커밋 시각).
+  **45일 이상**이면 브리프 첫 줄이 ⚠️ 가 되고 `사소한 커밋 1건 필요` 가 붙습니다.
   시각을 못 읽으면 `확인 불가 ⚠️` 로 표시합니다. 기준 일수는 repo variable `REPO_IDLE_WARN_DAYS`(기본 45).
 - ⚠️ 가 보이면 **사람이** README 오타 수정·주석 보완 같은 사소한 커밋 1건을 기본 브랜치(`main`)에 push 합니다.
   45일부터 60일까지 약 15일 동안 매일 알림이 오므로 놓칠 여유가 있습니다.
@@ -107,11 +109,22 @@ gh api "repos/thebluepigu/simparty-monitor/issues?state=open&labels=uptime-incid
 ## 수동 실행
 
 ```bash
-gh workflow run uptime.yml -R thebluepigu/simparty-monitor -f mode=test-alert   # 텔레그램 연동 확인 1건
+gh workflow run uptime.yml -R thebluepigu/simparty-monitor -f mode=test-alert   # 연동 확인 + 알림 서식 샘플 4종([샘플], 이슈·상태 미변경)
 gh workflow run uptime.yml -R thebluepigu/simparty-monitor -f mode=quick        # DB 미경유 체크
 gh workflow run uptime.yml -R thebluepigu/simparty-monitor -f mode=full         # DB 경유 (영업시간·시간당 1회로 자동 제한)
-gh workflow run neon-usage.yml -R thebluepigu/simparty-monitor                  # Neon 브리프
+gh workflow run neon-usage.yml -R thebluepigu/simparty-monitor -f mode=preview  # 실데이터 브리프 [미리보기] (판정 기준점 저장 안 함)
+gh workflow run neon-usage.yml -R thebluepigu/simparty-monitor -f mode=normal   # 정기 실행과 동일 (기준점 갱신)
 ```
+
+## 텔레그램 메시지 조정
+
+모든 텔레그램 본문은 `.github/scripts/telegram-format.sh` 한 파일에서 만듭니다(파일 머리의 '조정 가이드' 참고 — 어느 함수가
+어떤 메시지인지, 줄바꿈·굵게 규칙). 호출부(`uptime.sh`·`neon-usage.sh`)는 값만 넘깁니다. `parse_mode=HTML` 로 보내며
+동적 값은 전부 이스케이프하고, 태그가 깨져 텔레그램이 거부하면 태그를 벗긴 plain 으로 1회 다시 보냅니다.
+
+1. 로컬에서 고치고 `bash .github/scripts/tests/telegram-format.test.sh` 로 렌더 전문·검사 결과 확인 (네트워크 호출 없음,
+   `--plain` 은 텔레그램에 보이는 모습, `--quiet` 는 검사만)
+2. push 후 `-f mode=preview`(브리프)·`-f mode=test-alert`(알림 4종)로 실제 텔레그램에서 확인
 
 스케줄은 기본 브랜치(`main`)에 있는 워크플로 파일만 실행됩니다.
 
@@ -124,7 +137,9 @@ gh workflow run neon-usage.yml -R thebluepigu/simparty-monitor                  
   scripts/uptime-mode.sh     quick/full 모드 결정 (DB 보호)
   scripts/uptime.sh          체크 + 장애 이슈·텔레그램 상태머신
   scripts/neon-usage.sh      Neon API 조회 + 브리프
-  scripts/monitor-lib.sh     공용 함수 (텔레그램 전송·KST 시각)
+  scripts/monitor-lib.sh     공용 함수 (텔레그램 전송 — HTML·plain 재전송, KST 시각)
+  scripts/telegram-format.sh 텔레그램 메시지 템플릿 (모든 본문 — 조정은 여기만)
+  scripts/tests/             템플릿 단위 테스트·렌더 미리보기 + Neon fixture
 ```
 
 ⚠️ cron 문자열은 여러 곳이 같아야 합니다. full `4 2-14 * * *` 은 `uptime.yml` 의 `on.schedule`·`run-name`·
