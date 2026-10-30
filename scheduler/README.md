@@ -51,9 +51,9 @@ uptime 은 5~13번만 돌았습니다. 이 폴더의 Cloudflare Worker 는 **정
 | 이름 | 기본 | 뜻 |
 |---|---|---|
 | `SCHEDULER` | 없음 = `github` | 예약 실행 주 경로. `cloudflare` 로 두면 Worker 가 주 경로, GitHub schedule 은 대비책. 다른 값(오타)은 `github` 으로 취급하고 로그에 경고 + 브리프용 `SCHEDULER_BAD=1` |
-| `FULL_EVERY_HOURS` | 없음 = `1` | DB 경유(full) 체크 주기(시간). `1` = KST 11~23시 매시(하루 13회, 지금과 같음), `2` = 11·13·…·23시(7회), `3` = 11·14·17·20·23시(5회), `0` = 안 함. 브리프의 "DB체크 설계 N회" 와 복구 안내의 다음 DB 체크 시각도 이 값으로 계산합니다. 바꾸면 다음 run 부터 바로 적용됩니다(`gh variable set FULL_EVERY_HOURS -b 3 -R thebluepigu/simparty-monitor`) |
+| `FULL_EVERY_HOURS` | 없음 = `1` | DB 경유(full) 체크 주기(시간). `1` = KST 11~23시 매시(하루 13회, 지금과 같음), `2` = 11·13·…·23시(7회), `3` = 11·14·17·20·23시(5회), `0` = 안 함. 브리프의 "DB 포함 점검 예정 N번" 과 복구 안내의 다음 DB 포함 점검 시각도 이 값으로 계산합니다. 바꾸면 다음 run 부터 바로 적용됩니다(`gh variable set FULL_EVERY_HOURS -b 3 -R thebluepigu/simparty-monitor`) |
 
-`FULL_EVERY_HOURS=0` 으로 두면 DB 체크가 전혀 돌지 않으므로, 하루 반 뒤부터 브리프에 "DB체크 36시간 전 ⚠️" 가 뜹니다.
+`FULL_EVERY_HOURS=0` 으로 두면 DB 체크가 전혀 돌지 않으므로, 하루 반 뒤부터 브리프에 "🟡 DB 포함 점검이 36시간째 없어요" 가 뜨고, DB 를 거치는 점검이 실패한 장애 알림은 "DB 포함 점검이 꺼져 있어요" 로 안내합니다.
 정말로 끌 때만 씁니다. 주기를 늘리면 DB 체크 실패로 열린 장애는 다음 DB 체크 때 복구가 확정되므로(최대 N시간) 그만큼 늦게 닫힙니다.
 
 ## 대비책 — GitHub `schedule:` 은 그대로 남깁니다

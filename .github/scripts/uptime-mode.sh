@@ -26,7 +26,7 @@
 #      - gh 조회 실패 → quick
 #
 # ⚠️ FULL_CRON 은 uptime.yml 의 on.schedule(full 줄)·run-name 과 문자열이 같아야 한다(3곳 동기).
-#    어긋나면 full 이 영영 안 돈다 → neon-usage 브리프의 "DB체크(full) 마지막 성공" heartbeat 가 ⚠️ 로 드러낸다.
+#    어긋나면 full 이 영영 안 돈다 → neon-usage 브리프의 "DB체크(full) 마지막 성공" heartbeat 가 🟡 로 드러낸다.
 #    QUICK_CRONS 는 on.schedule 의 quick 2줄과 같아야 한다(어긋나면 "알 수 없는 schedule" 경고 + quick 동작).
 set -euo pipefail
 

@@ -16,28 +16,31 @@ run-name: "Neon 사용량 일일 브리프${{ inputs.source == 'cf' && ' · cf' 
 # 브리프(문단 5개, 본문은 .github/scripts/telegram-format.sh 의 fmt_brief — 문구 조정은 그 파일만):
 #   ① 판정 한 줄 ② 사이트(열린 장애 이슈·마지막 확인 시각) ③ Neon 사용·비용 ④ autosuspend ⑤ 감시 자체(heartbeat·
 #   최근 24h 실행 수 vs 설계 144·저장소 마지막 커밋).
-# 경보(첫 줄 이모지 — 실제 문제만):
+# 신호등(첫 줄 = 섹션 중 가장 나쁜 색 — 판정은 neon-usage.sh 의 .level 한 곳):
 #   🔴 autosuspend 미작동 의심 — 아래 둘 중 하나라도 ≥ 90%
 #      (a) 최근 24시간 중 "내내 켜져 있던" 시간 비율 (v2 hourly compute_unit_seconds ≥ 0.9×최소CU×3600, 프로젝트 합계)
 #      (b) 직전 실행 대비 기본 브랜치 active_time_seconds 증가분 / 경과시간 (직전값은 actions/cache,
 #          첫 실행·간격 20시간 미만(수동 실행 등)은 생략하고 기준점도 유지. 기본 브랜치 값이 없으면 프로젝트 합계로
 #          대체하고 문구에 명시)
 #   🔴 열린 업타임 장애 이슈가 있음(사이트 장애 중)
-#   ⚠️ 기간말 예상 비용 > vars.NEON_BUDGET_USD (기본 $15), 또는 uptime.yml 마지막 **정기(schedule·Worker cf)** 성공 실행이 6시간 넘게
+#   🟡 기간 말 예상 비용이 vars.NEON_BUDGET_USD (기본 $15) 초과 또는 그 NEON_BUDGET_WARN_PCT(기본 80)% 이상, 또는 uptime.yml 마지막 **정기(schedule·Worker cf)** 성공 실행이 6시간 넘게
 #      전이거나 확인 불가, 또는 DB 경유(full) 체크 마지막 성공이 36시간 넘게 전 (감시 워크플로 자체가 멈추거나 full 이 영영
 #      강등되는 것을 드러내는 heartbeat). 2026-10-13: 2h/14h 는 GitHub 무료 cron 드롭(실측 간격 최대 ~3시간, full 하루 2회)
-#      때문에 매일 ⚠️ 라 경보를 희석 → 12h/36h 로 완화했다가, 12h 는 밤 22시에 멈춘 감시를 09:17 에 ✅ 로 보여 6h 로 조정.
+#      때문에 매일 경보(옛 ⚠️)라 희석 → 12h/36h 로 완화했다가, 12h 는 밤 22시에 멈춘 감시를 09:17 에 정상(옛 ✅)으로 보여 6h 로 조정.
 #      수동 test-alert 성공은 heartbeat 로 세지 않는다(체크 없이 성공 — 멈춘 스케줄을 가림). 드롭 정도는 ⑤ 의 "최근 24h
-#      실행 N회 / 설계 144" 로 따로 보여 준다(경보 아님). 기준은 vars.HB_UPTIME_MAX_H · vars.HB_FULL_MAX_H 로 조정.
-#      ② 사이트 "✅ 정상" 은 열린 장애 이슈가 없고 uptime 마지막 성공이 vars.SITE_FRESH_H(3h) 이내일 때만.
+#      실행 N회 / 설계 144" 로 따로 보여 준다(RUNS_WARN_PCT 기본 0 = 경보 아님). 기준은 vars.HB_UPTIME_MAX_H · vars.HB_FULL_MAX_H 로 조정.
+#      ② 사이트 "🟢 정상" 은 열린 장애 이슈가 없고 uptime 마지막 성공이 vars.SITE_FRESH_H(3h) 이내일 때만. 사이트 🟡 기준은
+#      SCHEDULER=cloudflare 면 3h, github 면 6h(3~6h 는 🟢 + 'GitHub 지연' 글자 — 매일 🟡 소음 방지).
+#      또는 SCHEDULER=cloudflare 인데 최근 60분 Worker run 없음(예약 실행기 멈춤) · SCHEDULER 값 오류.
 #      또는 저장소 마지막 커밋이 45일(REPO_IDLE_WARN_DAYS) 이상 전 — 공개 repo 는 60일 무활동이면 GitHub 가 schedule 을
 #      자동 비활성화한다. 자동 빈 커밋(keepalive)은 GitHub 가 약관 위반으로 막은 전례가 있어 쓰지 않고, 사람이 사소한
 #      커밋 1건을 하도록 여기서 알린다(README '60일 규칙' 참고).
 #   시간별 데이터가 비면 "0/24 정상" 으로 읽지 않고 "데이터 없음 — 판정 불가" 로 표시.
 # CU-h: consumption_history v2 compute_unit_seconds(요금 기준, Launch 이상·org_id 필요) 우선,
-#       불가하면 compute_time_seconds/3600 근사치("≈" 표기).
+#       불가하면 compute_time_seconds/3600 근사치("(근사치)" 표기).
 # 조정 가능한 repo variables(없으면 기본값): NEON_PROJECT_ID, NEON_CU_HOUR_USD(0.106),
-#   NEON_STORAGE_GB_USD(0.35), NEON_BUDGET_USD(15), NEON_MIN_CU(0.25), REPO_IDLE_WARN_DAYS(45).
+#   NEON_STORAGE_GB_USD(0.35), NEON_BUDGET_USD(15), NEON_MIN_CU(0.25), REPO_IDLE_WARN_DAYS(45),
+#   NEON_BUDGET_WARN_PCT(80, 0 = 끔), RUNS_WARN_PCT(0 = 끔 — Cloudflare 전환 뒤 켠다), HB_UPTIME_MAX_H(6), SITE_FRESH_H(3), HB_FULL_MAX_H(36).
 # 주의: schedule 은 기본 브랜치(main)에 있는 파일만 실행된다.
 
 # 수동 preview: gh workflow run neon-usage.yml -f mode=preview — 실데이터로 브리프를 렌더해 첫 줄에 "[미리보기] " 를 붙여 보내고,
@@ -91,7 +94,7 @@ jobs:
       STATE_DIR: .monitor-state
       # 예약 실행 주 경로: github(기본) | cloudflare — 스크립트(neon-usage.sh 등)는 읽기만 한다
       SCHEDULER: ${{ vars.SCHEDULER || 'github' }}
-      # full(DB 경유) 주기(시간, uptime-mode.sh 가 강제) — hb 가 '설계 DB체크 N회' 를 계산. 없으면 1(매시 = 13회, 지금과 같음)
+      # full(DB 경유) 주기(시간, uptime-mode.sh 가 강제) — hb 가 'DB 포함 점검 예정 N번' 을 계산. 없으면 1(매시 = 13회, 지금과 같음)
       FULL_EVERY_HOURS: ${{ vars.FULL_EVERY_HOURS || '1' }}
     steps:
       - uses: actions/checkout@v5
@@ -273,6 +276,8 @@ jobs:
           NEON_CU_HOUR_USD: ${{ vars.NEON_CU_HOUR_USD || '0.106' }}
           NEON_STORAGE_GB_USD: ${{ vars.NEON_STORAGE_GB_USD || '0.35' }}
           NEON_BUDGET_USD: ${{ vars.NEON_BUDGET_USD || '15' }}
+          # 기간 말 예상 비용이 예산의 이 % 이상이면 🟡 (0 = 끔)
+          NEON_BUDGET_WARN_PCT: ${{ vars.NEON_BUDGET_WARN_PCT || '80' }}
           NEON_MIN_CU: ${{ vars.NEON_MIN_CU || '0.25' }}
           UPTIME_LAST_SUCCESS: ${{ steps.hb.outputs.last }}
           UPTIME_LAST_FULL: ${{ steps.hb.outputs.full }}
@@ -282,7 +287,7 @@ jobs:
           UPTIME_FULL_24H: ${{ steps.hb.outputs.full24 }}
           UPTIME_FULL_EXEC_24H: ${{ steps.hb.outputs.fullx24 }}
           UPTIME_INCIDENT: ${{ steps.hb.outputs.incident }}
-          # 설계상 하루 DB체크 횟수(repo 변수 FULL_EVERY_HOURS 에서 계산, 없으면 13 — 예전 기본값과 같음)
+          # 설계상 하루 DB 포함 점검 횟수(repo 변수 FULL_EVERY_HOURS 에서 계산, 없으면 13 — 예전 기본값과 같음)
           UPTIME_DESIGN_FULL: ${{ steps.hb.outputs.design_full || '13' }}
           # 최근 24h 정기 실행 중 Worker(cf)·GitHub schedule(대비책) 각각의 수 — 템플릿이 쓰면 표시(참고값)
           UPTIME_CF_RUNS_24H: ${{ steps.hb.outputs.cf24 }}
@@ -295,6 +300,8 @@ jobs:
           HB_UPTIME_MAX_H: ${{ vars.HB_UPTIME_MAX_H || '6' }}
           SITE_FRESH_H: ${{ vars.SITE_FRESH_H || '3' }}
           HB_FULL_MAX_H: ${{ vars.HB_FULL_MAX_H || '36' }}
+          # 24h 점검 횟수가 예정의 이 % 미만이면 🟡 — 기본 0(끔). GitHub cron 은 매일 미달이라 Cloudflare 전환 뒤 켠다(예: 80)
+          RUNS_WARN_PCT: ${{ vars.RUNS_WARN_PCT || '0' }}
           # 정기(schedule) 실행엔 inputs 가 없어 normal
           BRIEF_MODE: ${{ inputs.mode || 'normal' }}
         run: bash .github/scripts/neon-usage.sh

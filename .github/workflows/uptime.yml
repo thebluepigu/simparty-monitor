@@ -28,7 +28,7 @@ run-name: "uptime · ${{ inputs.source == 'cf' && 'cf · ' || '' }}${{ github.ev
 #   quick 으로 강등, 재실행(run_attempt>1)이면 강등, 스케줄·수동 불문 최근 45분 안에 DB 체크를 실제로 실행한
 #   다른 run('DB 경유(full) 실행 표식' 스텝 success, 또는 재실행돼 1차 시도를 확인할 수 없는 run)이 있으면 강등.
 #   ⚠️ full cron 문자열 '4 2-14 * * *' 은 on.schedule·run-name·uptime-mode.sh(FULL_CRON) 3곳이 같아야 한다.
-#      어긋나 full 이 안 돌면 neon-usage 브리프의 "DB체크 N시간 전 ⚠️" heartbeat 로 드러난다.
+#      어긋나 full 이 안 돌면 neon-usage 브리프의 "🟡 DB 포함 점검이 N시간째 없어요" heartbeat 로 드러난다.
 #   /actuator/health (DB 포함 전체 헬스)는 감시에 쓰지 않는다.
 #
 # 주기: 10분 (매시 04·14·24·34·44·54분, 시간당 6회 = 하루 144회). 이 repo 는 감시 코드만 둔 **공개 repo** 라
@@ -42,11 +42,11 @@ run-name: "uptime · ${{ inputs.source == 'cf' && 'cf · ' || '' }}${{ github.ev
 #   알림 규칙(재알림 6h·확대 1h·close 강화 120분·재오픈 6h)은 전부 시각 기준이라 주기를 바꿔도 알림량은 그대로.
 #   공개 repo 주의: 60일간 repo 활동(커밋 등)이 없으면 GitHub 가 schedule 을 자동 비활성화한다. 자동 빈 커밋(keepalive)은
 #   GitHub 가 약관 위반으로 막은 전례가 있어 쓰지 않는다 → neon-usage 브리프가 "저장소 마지막 커밋 N일 전" 을 매일 보여 주고
-#   45일 이상이면 ⚠️. 사람이 사소한 커밋 1건을 한다. 꺼졌으면 gh workflow enable (README '60일 규칙').
+#   45일 이상이면 🟡. 사람이 사소한 커밋 1건을 한다. 꺼졌으면 gh workflow enable (README '60일 규칙').
 # 정각(:00)은 GitHub 스케줄 부하 시간대라 지연·드롭이 잦아 x4분(04·14·…·54)으로 비킨다.
 # 공개 repo 라 run 로그·step summary·장애 이슈는 누구나 볼 수 있다 — 로그에 시크릿·응답 본문 외 내부 정보를 찍지 말 것.
 # 수동: Actions → 이 워크플로 → Run workflow → mode(quick | full | test-alert).
-#   test-alert 는 체크 없이 텔레그램 연동 확인 + 알림 서식 샘플 4종(🔴 감지·🟢 복구·⚠️ 감시 실패·🟠 반복)을 "[샘플]" 태그로
+#   test-alert 는 체크 없이 텔레그램 연동 확인 + 알림 서식 샘플 4종(🔴 감지·🟢 복구·🟡 감시 자체 실패·🟡 장애·복구 반복)을 "[샘플]" 태그로
 #   연속 전송한다(fixture 렌더 — 이슈·상태 미변경). 문구 조정은 .github/scripts/telegram-format.sh 한 파일.
 # 상태: 이 repo 의 GitHub Issue — github-actions 봇이 만든 것 + 제목 '[uptime] 장애 감지' + label 'uptime-incident'(감시 전용.
 #   사람이 쓰는 일반 'incident' 라벨과 분리). open = 장애 중. 외부인이 같은 제목·마커로 만든 이슈는 무시(공개 repo).

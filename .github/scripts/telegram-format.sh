@@ -121,15 +121,26 @@ fmt_dur() {
     if [ $((m % 60)) -eq 0 ]; then printf '%d시간' $((m / 60)); else printf '%d시간 %d분' $((m / 60)) $((m % 60)); fi
   else printf '%d일 %d시간' $((m / 1440)) $(((m % 1440) / 60)); fi
 }
-# 다음 full(DB 경유) 슬롯 epoch — KST 11:04~23:04 매시 04분 (uptime.yml full cron '4 2-14 * * *' 과 같은 뜻)
+# full 주기(시간) — repo 변수 FULL_EVERY_HOURS 를 워크플로가 env 로 내려 준다. 해석은 uptime-mode.sh 와 같다
+#   (공백 제거 후 정수가 아니면 1, 0 = DB 포함 점검 안 함)
+_fmt_full_every() {
+  local n; n="$(printf '%s' "${FULL_EVERY_HOURS:-}" | tr -d '[:space:]')"
+  if [[ "$n" =~ ^[0-9]+$ ]]; then printf '%d' $((10#$n)); else printf 1; fi
+}
+# 다음 full(DB 경유) 슬롯 epoch — KST 11:04~23:04 의 04분 중 (KST시 − 11) % FULL_EVERY_HOURS == 0 인 시각
+#   (uptime-mode.sh 의 (UTC시 − 2) % N 과 같은 뜻 — N=1 이면 매시 = uptime.yml full cron '4 2-14 * * *').
+#   N=0(DB 포함 점검 끔)이면 빈 값 — 호출하는 쪽이 "다음 예정" 을 말하지 않는다
 _fmt_next_full() {
-  local k=$(( $1 + 32400 )) day hr t
+  local k=$(( $1 + 32400 )) day hr t n d
+  n="$(_fmt_full_every)"; [ "$n" -gt 0 ] || return 0
   day=$(( k / 86400 * 86400 ))
-  for hr in 11 12 13 14 15 16 17 18 19 20 21 22 23; do
-    t=$(( day + hr * 3600 + 240 ))
-    if [ "$t" -gt "$k" ]; then printf '%s' $(( t - 32400 )); return; fi
+  for d in 0 1; do
+    for hr in 11 12 13 14 15 16 17 18 19 20 21 22 23; do
+      [ $(( (hr - 11) % n )) -eq 0 ] || continue
+      t=$(( day + d * 86400 + hr * 3600 + 240 ))
+      if [ "$t" -gt "$k" ]; then printf '%s' $(( t - 32400 )); return; fi
+    done
   done
-  printf '%s' $(( day + 86400 + 11 * 3600 + 240 - 32400 ))
 }
 _csv_has() { case ",$1," in *",$2,"*) return 0 ;; esac; return 1; }
 # "a,b" → "<code>a</code>, <code>b</code>"
@@ -151,7 +162,10 @@ _fmt_light() { case "${1-}" in crit) printf '🔴' ;; warn) printf '🟡' ;; *) 
 # 예약 실행 주체 — 워크플로가 repo 변수 vars.SCHEDULER 를 env SCHEDULER 로 내려 준다(여기서는 읽기만, 모르는 값 = github).
 #   github     = GitHub 무료 cron: 설계 10분 주기지만 실측 몇 시간씩 밀린다 → 주기를 단정하지 말고 "늦을 수 있음" 을 덧붙인다
 #   cloudflare = Workers Cron 정시 실행: 10분 주기 그대로 말해도 된다
-_fmt_sched() { case "${SCHEDULER:-github}" in cloudflare) printf cloudflare ;; *) printf github ;; esac; }
+#   해석은 schedule-gate.sh 와 같다(대소문자·공백 무시) — ' Cloudflare ' 를 여기서만 github 로 보면 안내가 실제 동작과 어긋난다
+_fmt_sched() {
+  case "$(printf '%s' "${SCHEDULER:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in cloudflare) printf cloudflare ;; *) printf github ;; esac
+}
 _FMT_GH_DELAY='점검은 설계상 10분마다지만 지금은 GitHub 무료 스케줄 지연으로 몇 시간 간격이 될 수 있어요 — 위 시각도 그만큼 늦을 수 있음'
 # 점검 모드 → 쉬운 말. $2=long 이면 식별자를 괄호로 한 번
 _fmt_mode() {
@@ -329,7 +343,12 @@ _fmt_outage() {
   local dbf=""
   for c in readiness categories home; do _csv_has "$failed" "$c" && dbf="${dbf:+$dbf,}$c"; done
   if [ -n "$dbf" ] && [ "$kind" != "selffail" ]; then
-    L+=("- DB 를 거치는 점검($(_fmt_labels "$dbf"))은 DB 포함 점검에서만 다시 확인해요 (다음 예정 <b>$(fmt_when "$(_fmt_next_full "$now")" "$now")</b> KST) → 그때 통과해야 복구 확정")
+    local nf; nf="$(_fmt_next_full "$now")"
+    if [ -n "$nf" ]; then
+      L+=("- DB 를 거치는 점검($(_fmt_labels "$dbf"))은 DB 포함 점검에서만 다시 확인해요 (다음 예정 <b>$(fmt_when "$nf" "$now")</b> KST) → 그때 통과해야 복구 확정")
+    else
+      L+=("- DB 를 거치는 점검($(_fmt_labels "$dbf"))은 DB 포함 점검에서만 다시 확인하는데, 지금 DB 포함 점검이 꺼져 있어요(FULL_EVERY_HOURS=0) → 수동 실행(mode=full)으로 확인")
+    fi
   fi
   # GitHub cron 지연 — 위 '다시 알림'·'다음 예정' 시각은 점검이 돌아야 지켜진다(주기를 단정하지 않기 — 2026-10-30 검증 M1)
   [ "$(_fmt_sched)" = cloudflare ] || L+=("- $_FMT_GH_DELAY")
@@ -479,6 +498,7 @@ fmt_brief() {
   local B_up_at B_full_at B_up_max B_full_max B_up_bad B_full_bad B_full_unknown B_runs B_full24 B_fullx B_dr B_df
   local B_up_unknown B_up_fresh B_site_fresh_h B_rwarn B_runs_low B_full_low
   local B_idle B_idle_warn B_idle_bad B_idle_unknown B_sched
+  local B_cf_stale B_sched_bad B_cf_at B_cf24 B_fb24
   local B_lv_site B_lv_cost B_lv_as B_lv_watch B_lv_all
   eval "$(jq -r '
     def s: if . == null then "" else tostring end;
@@ -507,6 +527,8 @@ fmt_brief() {
     kv("B_idle"; .repo.idle_days), kv("B_idle_warn"; .repo.warn_days), kv("B_idle_bad"; .repo.bad),
     kv("B_idle_unknown"; .repo.unknown // (.repo.idle_days == null)),
     kv("B_sched"; .sched // "github"),
+    kv("B_cf_stale"; .scheduler.stale // false), kv("B_sched_bad"; .scheduler.bad // false),
+    kv("B_cf_at"; .scheduler.cf_at), kv("B_cf24"; .scheduler.cf24), kv("B_fb24"; .scheduler.fb24),
     kv("B_lv_site"; .level.site // "ok"), kv("B_lv_cost"; .level.cost // "ok"), kv("B_lv_as"; .level.as // "ok"),
     kv("B_lv_watch"; .level.watch // "ok"), kv("B_lv_all"; .level.overall // "ok")
   ' "$json")"
@@ -543,6 +565,9 @@ fmt_brief() {
   elif [ "$B_runs_low" = "true" ]; then low_what="24시간 점검 횟수가"
   elif [ "$B_full_low" = "true" ]; then low_what="24시간 DB 포함 점검 횟수가"; fi
   [ -z "$low_what" ] || probs+=("warn|${low_what} 예정의 ${B_rwarn}%보다 적어요 — 예약 실행이 제대로 도는지 확인")
+  # 예약 실행기(Cloudflare Worker) — 멈추면 GitHub 대비책이 이어 받아 감시는 계속되지만 시각이 다시 불규칙해진다(조용히 넘어가지 않게)
+  [ "$B_cf_stale" != "true" ] || probs+=("warn|예약 실행기(Cloudflare)가 1시간 넘게 안 돌았어요 — GitHub 대비책으로 도는 중이라 점검 시각이 불규칙해요 (토큰 만료 확인)")
+  [ "$B_sched_bad" != "true" ] || probs+=("warn|repo 변수 SCHEDULER 값이 잘못됐어요 — github 또는 cloudflare 만 돼요 (지금은 GitHub 스케줄로 동작)")
   if [ "$B_idle_bad" = "true" ]; then local left=$((60 - B_idle)); [ "$left" -ge 0 ] || left=0
     probs+=("warn|감시 저장소 ${B_idle}일째 커밋 없음 — ${left}일 뒤 감시가 자동으로 멈춰요 (사소한 커밋 1건 필요)")
   elif [ "$B_idle_unknown" = "true" ]; then probs+=("warn|감시 저장소 마지막 커밋을 확인할 수 없어요 — 60일 무활동이면 감시가 멈추니 직접 확인"); fi
@@ -671,6 +696,15 @@ fmt_brief() {
   else
     L+=("- 최근 24시간 점검 횟수 확인 불가")
   fi
+  # 예약 실행기 — cloudflare 모드에서만(github 모드엔 Worker 가 없다). 대비책 수가 늘면 Worker 가 빠뜨린 것
+  if [ "$B_sched" = "cloudflare" ]; then
+    local cf_line="- 예약 실행기(Cloudflare) 마지막 실행 "
+    if [ -n "$B_cf_at" ]; then cf_line+="<code>$(fmt_ago $((now - B_cf_at)))</code>"; else cf_line+="기록 없음"; fi
+    [ "$B_cf_stale" = true ] && cf_line+=" 🟡"
+    [ -z "$B_cf24" ] || cf_line+=" / 최근 24시간 예약 실행기 ${B_cf24}번, GitHub 대비책 ${B_fb24:-0}번"
+    L+=("$cf_line <i>(1시간 넘게 안 돌면 🟡)</i>")
+  fi
+  [ "$B_sched_bad" != "true" ] || L+=("- repo 변수 SCHEDULER 값 오류 🟡 <i>(github 또는 cloudflare — 지금은 GitHub 스케줄로 동작)</i>")
   if [ -n "$B_idle" ]; then
     L+=("- 감시 저장소 마지막 커밋 <code>$(fmt_ago $((B_idle * 86400)))</code>$([ "$B_idle_bad" = true ] && printf ' 🟡 사소한 커밋 1건 필요') <i>(60일 동안 커밋이 없으면 GitHub 가 감시를 자동으로 멈춤, ${B_idle_warn}일부터 🟡)</i>")
   else
@@ -679,7 +713,8 @@ fmt_brief() {
 
   # ---- ⑥ 다음 브리프 (정기 실행 시각 09:17 KST — neon-usage.yml cron '17 0 * * *') ----
   local nday="내일"; [ "$(_kst "$now" %H%M)" -ge 917 ] 2>/dev/null || nday="오늘"
-  if [ "$B_sched" = "cloudflare" ]; then L+=("" "다음 브리프: ${nday} 09:17")
+  if [ "$B_sched" = "cloudflare" ] && [ "$B_cf_stale" != "true" ]; then L+=("" "다음 브리프: ${nday} 09:17")
+  elif [ "$B_sched" = "cloudflare" ]; then L+=("" "다음 브리프: ${nday} 09:17 예정(예약 실행기가 멈춰 있으면 GitHub 대비책이 오후에 보내요)")
   else L+=("" "다음 브리프: ${nday} 09:17 예정(지금은 GitHub 지연으로 오후에 올 수 있음)"); fi
   _fmt_print
 }

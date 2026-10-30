@@ -21,7 +21,11 @@
 #   RUNS_WARN_PCT (기본 0 = 끔) — 최근 24h 점검 횟수(전체·DB 점검 각각)가 예정의 이 % 미만이면 🟡.
 #     GitHub 무료 cron 은 지연·드롭이 심해(실측 하루 5~13회 / 예정 144회) 켜면 매일 🟡 → 꺼 두고,
 #     Cloudflare 예약 실행(SCHEDULER=cloudflare)으로 바꾼 뒤 켠다(예: 80)
-#   SCHEDULER (github | cloudflare, 기본 github — 읽기만) — 브리프 끝 "다음 브리프" 안내 문구·드롭 설명 줄을 고른다
+#   SCHEDULER (github | cloudflare, 기본 github — 읽기만) — 브리프 끝 "다음 브리프" 안내 문구·드롭 설명 줄·사이트 🟡 기준을 고른다.
+#     모르는 값이면 github 로 동작하고 ⑤ 감시 자체 🟡 (SCHEDULER_BAD=1 — hb 가 같은 판정을 내려 주기도 한다)
+#   UPTIME_CF_STALE (1 = cloudflare 인데 최근 60분 Worker run 없음 → 🟡 "예약 실행기 멈춤") · UPTIME_CF_LAST(ISO)
+#   UPTIME_CF_RUNS_24H · UPTIME_FALLBACK_RUNS_24H — 최근 24h 정기 실행 중 Worker / GitHub 대비책 수(cloudflare 모드에서 표시만)
+# 출력: GITHUB_OUTPUT 에 sent=1 (텔레그램 전송 성공 시 — 템플릿 고장으로 job 이 실패해도 남긴다)
 #   UPTIME_INCIDENT (옵션, JSON — 열린 장애 이슈 {"open":false} | {"open":true,"number","url","failed","since"}, 빈 값 = 확인 불가)
 #   BRIEF_MODE (normal | preview) — preview 는 첫 줄에 "[미리보기] ", 상태(판정 기준점) 저장 안 함
 #   REPO_LAST_COMMIT_EPOCH (옵션, epoch — 이 저장소 마지막 커밋 시각. 워크플로가 git log -1 로 넣어 줌)
@@ -327,9 +331,18 @@ for v in HB_UPTIME_MAX_H HB_FULL_MAX_H SITE_FRESH_H REPO_IDLE_WARN_DAYS BUDGET_W
                    BUDGET_WARN_PCT) BUDGET_WARN_PCT=80 ;; RUNS_WARN_PCT) RUNS_WARN_PCT=0 ;; *) REPO_IDLE_WARN_DAYS=45 ;; esac ;;
   esac
 done
-# 예약 실행 주체 — 워크플로가 repo 변수(vars.SCHEDULER)에서 내려 준다. 이 스크립트는 읽기만(문구 선택용)
-SCHED="${SCHEDULER:-github}"
-case "$SCHED" in github|cloudflare) ;; *) echo "::warning::알 수 없는 SCHEDULER '$SCHED' — github 로 간주"; SCHED=github ;; esac
+# 예약 실행 주체 — 워크플로가 repo 변수(vars.SCHEDULER)에서 내려 준다. 이 스크립트는 읽기만(문구 선택 + 🟡 판정)
+#   해석은 schedule-gate.sh·neon-usage.yml hb 와 같다(대소문자·공백 무시, 모르는 값 = github + 🟡 "SCHEDULER 값 오류").
+#   ' Cloudflare ' 를 gate 는 cloudflare 로, 여기서는 github 로 보면 안내 문구·사이트 🟡 기준이 실제 동작과 어긋난다
+SCHED="$(printf '%s' "${SCHEDULER:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"; SCHED_BAD=0
+case "$SCHED" in
+  '') SCHED=github ;;
+  github|cloudflare) ;;
+  *) echo "::warning::알 수 없는 SCHEDULER '${SCHEDULER}' — github 로 간주"; SCHED=github; SCHED_BAD=1 ;;
+esac
+[ "${SCHEDULER_BAD:-0}" != "1" ] || SCHED_BAD=1
+# 예약 실행기(Worker) 상태 — hb 가 cloudflare 모드에서만 채운다: UPTIME_CF_STALE 1 = 최근 60분 Worker run 없음(대비책으로 도는 중)
+CF_STALE=0; [ "$SCHED" = cloudflare ] && [ "${UPTIME_CF_STALE:-}" = "1" ] && CF_STALE=1
 iso_epoch() { [ -n "${1:-}" ] || return 0; date -u -d "$1" +%s 2>/dev/null || true; }
 num_or_empty() { case "${1:-}" in ''|*[!0-9]*) ;; *) printf '%s' "$1" ;; esac; }
 LC_DAYS=""
@@ -349,7 +362,9 @@ jq -n --slurpfile r "$WORK/report.json" --argjson now "$NOW" --arg mode "$BRIEF_
   --arg fullx "$(num_or_empty "${UPTIME_FULL_EXEC_24H:-}")" \
   --argjson dr "${UPTIME_DESIGN_RUNS:-144}" --argjson df "${UPTIME_DESIGN_FULL:-13}" \
   --arg inc "$INCIDENT" --arg lcd "$LC_DAYS" --argjson idle_warn "$REPO_IDLE_WARN_DAYS" \
-  --argjson bwarn "$BUDGET_WARN_PCT" --argjson rwarn "$RUNS_WARN_PCT" --arg sched "$SCHED" '
+  --argjson bwarn "$BUDGET_WARN_PCT" --argjson rwarn "$RUNS_WARN_PCT" --arg sched "$SCHED" \
+  --argjson sched_bad "$SCHED_BAD" --argjson cf_stale "$CF_STALE" --arg cf_at "$(iso_epoch "${UPTIME_CF_LAST:-}")" \
+  --arg cf24 "$(num_or_empty "${UPTIME_CF_RUNS_24H:-}")" --arg fb24 "$(num_or_empty "${UPTIME_FALLBACK_RUNS_24H:-}")" '
   def num($s): if $s == "" then null else ($s | tonumber) end;
   # 신호등 단계: ok(🟢) < warn(🟡) < crit(🔴). 섹션별 판정과 첫 줄(가장 나쁜 색)을 여기서 한 번만 정한다 —
   # fmt_brief(HTML)·plain_brief(비상 형식)는 이 값을 표현만 한다(두 곳의 판정이 어긋나지 않게)
@@ -381,7 +396,8 @@ jq -n --slurpfile r "$WORK/report.json" --argjson now "$NOW" --arg mode "$BRIEF_
   | {site: (if ($site.open // false) then "crit" elif $site == null or $site_stale then "warn" else "ok" end),
      cost: (if $over or $near then "warn" else "ok" end),
      as: (if $as_bad then "crit" elif $hour_judged or ($p.autosuspend.state == "judge") then "ok" else "warn" end),
-     watch: (if $up_bad or $full_bad or $fa == null or $idle == null or $idle_bad or $runs_low or $full_low then "warn" else "ok" end)
+     watch: (if $up_bad or $full_bad or $fa == null or $idle == null or $idle_bad or $runs_low or $full_low
+                or $cf_stale == 1 or $sched_bad == 1 then "warn" else "ok" end)
     } as $lv
   | {
       now: $now, preview: ($mode == "preview"), project: ($p.project_name // "?"),
@@ -406,6 +422,9 @@ jq -n --slurpfile r "$WORK/report.json" --argjson now "$NOW" --arg mode "$BRIEF_
            runs_warn_pct: $rwarn, runs_low: $runs_low, full_low: $full_low},
       repo: {idle_days: $idle, warn_days: $idle_warn, bad: $idle_bad, unknown: ($idle == null)},
       sched: $sched,
+      # 예약 실행기 — cf_stale: cloudflare 인데 최근 60분 Worker run 없음(🟡) / sched_bad: SCHEDULER 값 오류(🟡, github 으로 동작)
+      #   cf_at: 마지막 Worker run(epoch) · cf24/fb24: 최근 24h 정기 실행 중 Worker / GitHub 대비책 수(표시만)
+      scheduler: {stale: ($cf_stale == 1), bad: ($sched_bad == 1), cf_at: num($cf_at), cf24: num($cf24), fb24: num($fb24)},
       level: ($lv + {overall: ([$lv[]] | worst)})
     }' > "$WORK/brief.json"
 
@@ -431,5 +450,8 @@ if [ "${DRY_RUN:-0}" = "1" ]; then echo "DRY_RUN — 텔레그램 생략"; degra
 # 실행 로그 링크는 브리프에 넣지 않는다(매일 오는 메시지라 군더더기) — 필요하면 step summary·Actions 탭
 tg_send "$MSG" "$TG_MSG_PM" || true
 if [ "$TG_FAILED" = "1" ]; then note_fail "텔레그램 전송 실패"; echo "::error::텔레그램 전송 실패"; exit 1; fi
+# 전송 성공 표식 — degraded_exit(템플릿 고장 → exit 1)보다 먼저. neon-usage.yml '브리프 전송 표식' 스텝이 이 값을 보고
+# success 가 되고, schedule-gate.sh 는 그 스텝으로 "오늘 정기 브리프 보냄" 을 판정한다(템플릿 고장 날 대비책이 2통째를 보내지 않게)
+echo "sent=1" >> "${GITHUB_OUTPUT:-/dev/null}"
 degraded_exit
 exit 0

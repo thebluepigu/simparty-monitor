@@ -49,9 +49,10 @@ Neon(PostgreSQL) 사용량을 확인하고, 이상이 있으면 텔레그램으�
     `HB_UPTIME_MAX_H`·`HB_FULL_MAX_H`·`SITE_FRESH_H`(2026-10-13: 2h 는 매일 경보라 희석, 12h 는 밤사이 멈춘 감시를 놓쳐 6h).
   - 브리프 끝 줄은 다음 브리프 시각입니다. `SCHEDULER=cloudflare` 면 "다음 브리프: 내일 09:17", 그 외(기본 github)면
     "… 09:17 예정(지금은 GitHub 지연으로 오후에 올 수 있음)".
-  - `NEON_BUDGET_WARN_PCT`·`RUNS_WARN_PCT`·`SCHEDULER` 는 `neon-usage.sh` 가 env 로 읽습니다(없으면 기본값). repo variable 로
-    바꾸려면 `neon-usage.yml` 의 브리프 스텝 env 에 같은 이름으로 내려 줘야 합니다
-    (`NEON_BUDGET_WARN_PCT: ${{ vars.NEON_BUDGET_WARN_PCT || '80' }}`, `RUNS_WARN_PCT: ${{ vars.RUNS_WARN_PCT || '0' }}` — 워크플로 작업에서 추가).
+  - `NEON_BUDGET_WARN_PCT`·`RUNS_WARN_PCT`·`SCHEDULER`·`FULL_EVERY_HOURS` 는 repo variable 로 바꿉니다(`neon-usage.yml` 이 env 로
+    내려 주고, 없으면 기본값 80 / 0 / github / 1). 예: `gh variable set RUNS_WARN_PCT -b 80 -R thebluepigu/simparty-monitor`.
+  - `SCHEDULER=cloudflare` 인데 최근 60분 동안 Worker run 이 없으면 ⑤ 감시 자체가 🟡 "예약 실행기(Cloudflare)가 1시간 넘게 안 돌았어요"
+    (GitHub 대비책으로 이어 돌지만 시각이 불규칙 — 토큰 만료부터 확인). `SCHEDULER` 값 오타도 🟡 입니다(github 으로 동작).
   - 장애·감시 실패 알림도 `SCHEDULER` 를 읽습니다(읽기만). 기본(github)이면 "10분 주기"·"약 10분 간격" 을 단정하지 않고
     "설계상 10분마다지만 지금은 GitHub 무료 스케줄 지연으로 몇 시간 간격이 될 수 있어요" 한 줄을 붙이고, cloudflare 면 10분 그대로 씁니다.
 - 감시 자체가 실패하면 '감시 자체 실패' 🟡 텔레그램을 6시간에 1건 보냅니다. 수동 test-alert·preview 의 실패는 알림은 보내되
@@ -91,7 +92,7 @@ Settings → Secrets and variables → Actions → **Secrets** 에 등록합니�
 `HB_UPTIME_MAX_H`(6), `HB_FULL_MAX_H`(36), `SITE_FRESH_H`(3),
 `SCHEDULER`(`github` | `cloudflare`, 기본 github — 예약 실행 주 경로, `scheduler/README.md`),
 `FULL_EVERY_HOURS`(1 — DB 경유(full) 체크 주기(시간). 1 = KST 11~23시 매시 13회 = 지금, 2 = 7회, 3 = 11·14·17·20·23시 5회,
-0 = 안 함. `uptime-mode.sh` 가 Worker·GitHub schedule·수동 어느 경로든 같은 주기로 강제하고, 브리프의 "DB체크 설계 N회" 와
+0 = 안 함. `uptime-mode.sh` 가 Worker·GitHub schedule·수동 어느 경로든 같은 주기로 강제하고, 브리프의 "DB 포함 점검 예정 N번" 과
 복구 안내의 다음 DB 체크 시각도 이 값을 씁니다).
 Variables 값은 run 로그에 보이므로 비밀이 아닌 값만 둡니다.
 

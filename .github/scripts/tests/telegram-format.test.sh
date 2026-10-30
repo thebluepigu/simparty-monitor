@@ -58,6 +58,16 @@ assert_eq "fmt_when 오늘"  '09:17'      "$(fmt_when "$NOW" "$NOW")"
 assert_eq "fmt_when 어제"  '어제 23:04' "$(fmt_when $((NOW - 36780)) "$NOW")"
 assert_eq "next full 오전" '11:04'      "$(fmt_when "$(_fmt_next_full "$NOW")" "$NOW")"
 assert_eq "next full 밤"   '10-14 11:04' "$(fmt_when "$(_fmt_next_full $((NOW + 14 * 3600)))" "$NOW")"
+# FULL_EVERY_HOURS(repo 변수) — uptime-mode.sh 와 같은 해석: N=3 → KST 11·14·17·20·23, 0 → 없음(빈 값), 정수 아님 → 1
+assert_eq "next full N=3 오전"   '11:04' "$(fmt_when "$(FULL_EVERY_HOURS=3 _fmt_next_full "$NOW")" "$NOW")"
+assert_eq "next full N=3 12:17"  '14:04' "$(fmt_when "$(FULL_EVERY_HOURS=3 _fmt_next_full $((NOW + 3 * 3600)))" "$NOW")"
+assert_eq "next full N=3 20:17"  '23:04' "$(fmt_when "$(FULL_EVERY_HOURS=3 _fmt_next_full $((NOW + 11 * 3600)))" "$NOW")"
+assert_eq "next full N=3 23:17"  '10-14 11:04' "$(fmt_when "$(FULL_EVERY_HOURS=3 _fmt_next_full $((NOW + 14 * 3600)))" "$NOW")"
+assert_eq "next full N=2 12:17"  '13:04' "$(fmt_when "$(FULL_EVERY_HOURS=' 2 ' _fmt_next_full $((NOW + 3 * 3600)))" "$NOW")"
+assert_eq "next full N=0 → 빈 값" '' "$(FULL_EVERY_HOURS=0 _fmt_next_full "$NOW")"
+assert_eq "next full N=x → 1"    '13:04' "$(fmt_when "$(FULL_EVERY_HOURS=x _fmt_next_full $((NOW + 3 * 3600)))" "$NOW")"
+assert_eq "_fmt_sched 대소문자·공백" cloudflare "$(SCHEDULER=' Cloudflare ' _fmt_sched)"
+assert_eq "_fmt_sched 빈 값"        github     "$(SCHEDULER= _fmt_sched)"
 
 # ---- 4) 렌더 검사 -------------------------------------------------------------
 # 허용 태그만·짝 맞음·남는 < > 없음·엔티티 외 & 없음·4096자 이내
@@ -108,6 +118,10 @@ R="$RUNNER_TEMP/res.tsv"
 printf '%s\t%s\t%s\t%s\t%s\n' liveness 1 200 0.21 ok robots 1 200 0.35 ok readiness 0 503 1.02 'status!=UP: {"status":"DOWN","components":{"db":"<DOWN>"}}' \
   categories 0 500 0.88 'HTTP 500' home 1 200 1.7 ok > "$R"
 show "🔴 감지 — DB 경유 (full)" "$(fmt_outage_detected kind=new results="$R" now="$NOW" mode=full issue="$ISSUE" run="$RUN")"
+assert_eq "DB 경유 실패 → 다음 예정 11:04 (N=1)" 1 "$(grep -c '다음 예정 <b>11:04</b> KST' <<< "$(fmt_outage_detected kind=new results="$R" now="$NOW" mode=full)" || true)"
+assert_eq "DB 경유 실패 → 다음 예정 14:04 (N=3, 12:17)" 1 "$(grep -c '다음 예정 <b>14:04</b> KST' <<< "$(FULL_EVERY_HOURS=3 fmt_outage_detected kind=new results="$R" now=$((NOW + 3 * 3600)) mode=full)" || true)"
+show "🔴 감지 — DB 경유, DB 포함 점검 꺼짐(FULL_EVERY_HOURS=0)" "$(FULL_EVERY_HOURS=0 fmt_outage_detected kind=new results="$R" now="$NOW" mode=full issue="$ISSUE" run="$RUN")"
+assert_eq "N=0 → 꺼져 있음 안내" 1 "$(grep -c '지금 DB 포함 점검이 꺼져 있어요(FULL_EVERY_HOURS=0)' <<< "$(FULL_EVERY_HOURS=0 fmt_outage_detected kind=new results="$R" now="$NOW" mode=full)" || true)"
 show "🔴 지속 — 6h 재알림 (이월 포함)" "$(fmt_outage_ongoing kind=remind results="$R" now="$NOW" mode=quick issue="$ISSUE" run="$RUN" since=$((NOW - 23400)) failed=categories,readiness,home)"
 show "🔴 확대" "$(fmt_outage_expanded results="$R" now="$NOW" mode=full issue="$ISSUE" run="$RUN" since=$((NOW - 4000)) new_fails=categories)"
 show "🔴 재발 (재오픈)" "$(fmt_outage_detected kind=reopen results="$R" now="$NOW" mode=full issue="$ISSUE" run="$RUN")"
@@ -174,6 +188,27 @@ assert_eq "SCHEDULER cloudflare → 정시 안내" "다음 브리프: 내일 09:
 assert_eq "SCHEDULER cloudflare → GitHub 드롭 설명 없음" 0 "$(grep -c 'GitHub 무료 스케줄' <<< "$LAST_BRIEF" || true)"
 brief "브리프 — SCHEDULER=이상한값" "$FIX" "${COMMON[@]}" SCHEDULER=bogus
 assert_eq "SCHEDULER 알 수 없음 → github 문구" "$GH_NOTE" "$(tail -n 1 <<< "$LAST_BRIEF")"
+assert_eq "SCHEDULER 알 수 없음 → 첫 줄 🟡" "🟡 <b>repo 변수 SCHEDULER 값이 잘못됐어요 — github 또는 cloudflare 만 돼요 (지금은 GitHub 스케줄로 동작)</b>" "$(sed -n 1p <<< "$LAST_BRIEF")"
+assert_eq "SCHEDULER 알 수 없음 → ⑤ 줄" 1 "$(grep -c '^- repo 변수 SCHEDULER 값 오류 🟡' <<< "$LAST_BRIEF" || true)"
+brief "브리프 — SCHEDULER 대소문자·공백 (' Cloudflare ')" "$FIX" "${COMMON[@]}" "SCHEDULER= Cloudflare "
+assert_eq "SCHEDULER ' Cloudflare ' → cloudflare 로 (gate 와 같은 해석)" "다음 브리프: 내일 09:17" "$(tail -n 1 <<< "$LAST_BRIEF")"
+assert_eq "SCHEDULER ' Cloudflare ' → 🟡 아님" "🟢" "$(sed -n 1p <<< "$LAST_BRIEF" | cut -d' ' -f1)"
+brief "브리프 — SCHEDULER 오류 (hb 가 SCHEDULER_BAD=1)" "$FIX" "${COMMON[@]}" SCHEDULER=github SCHEDULER_BAD=1
+assert_eq "SCHEDULER_BAD=1 → 첫 줄 🟡" "🟡" "$(sed -n 1p <<< "$LAST_BRIEF" | cut -d' ' -f1)"
+# 예약 실행기(Worker) 상태 — cloudflare 모드에서만. 60분 넘게 Worker run 없음 = 🟡 (GitHub 대비책으로 동작 중)
+brief "브리프 🟡 예약 실행기 멈춤 (cloudflare)" "$FIX" "${COMMON[@]}" SCHEDULER=cloudflare UPTIME_CF_STALE=1 \
+  UPTIME_CF_LAST="$(ISO $((NOW - 7200)))" UPTIME_CF_RUNS_24H=120 UPTIME_FALLBACK_RUNS_24H=3
+assert_eq "CF 멈춤 → 첫 줄" "🟡 <b>예약 실행기(Cloudflare)가 1시간 넘게 안 돌았어요 — GitHub 대비책으로 도는 중이라 점검 시각이 불규칙해요 (토큰 만료 확인)</b>" "$(sed -n 1p <<< "$LAST_BRIEF")"
+assert_eq "CF 멈춤 → 감시 자체 🟡" 1 "$(grep -c '^🟡 <b>감시 자체</b>: 확인 필요$' <<< "$LAST_BRIEF" || true)"
+assert_eq "CF 멈춤 → 실행기 줄" 1 "$(grep -c '^- 예약 실행기(Cloudflare) 마지막 실행 <code>2시간 전</code> 🟡 / 최근 24시간 예약 실행기 120번, GitHub 대비책 3번 ' <<< "$LAST_BRIEF" || true)"
+assert_eq "CF 멈춤 → 끝 줄" "다음 브리프: 내일 09:17 예정(예약 실행기가 멈춰 있으면 GitHub 대비책이 오후에 보내요)" "$(tail -n 1 <<< "$LAST_BRIEF")"
+brief "브리프 🟢 예약 실행기 정상 (cloudflare)" "$FIX" "${COMMON[@]}" SCHEDULER=cloudflare UPTIME_CF_STALE=0 \
+  UPTIME_CF_LAST="$(ISO $((NOW - 180)))" UPTIME_CF_RUNS_24H=144 UPTIME_FALLBACK_RUNS_24H=0
+assert_eq "CF 정상 → 🟢" "🟢" "$(sed -n 1p <<< "$LAST_BRIEF" | cut -d' ' -f1)"
+assert_eq "CF 정상 → 실행기 줄" 1 "$(grep -c '^- 예약 실행기(Cloudflare) 마지막 실행 <code>3분 전</code> / 최근 24시간 예약 실행기 144번, GitHub 대비책 0번 ' <<< "$LAST_BRIEF" || true)"
+brief "브리프 — github 모드는 UPTIME_CF_STALE 무시" "$FIX" "${COMMON[@]}" UPTIME_CF_STALE=1
+assert_eq "github + CF_STALE=1 → 🟢 (Worker 없음)" "🟢" "$(sed -n 1p <<< "$LAST_BRIEF" | cut -d' ' -f1)"
+assert_eq "github → 실행기 줄 없음" 0 "$(grep -c '예약 실행기' <<< "$LAST_BRIEF" || true)"
 # 🟡 주의: 예산 85% 예상(80% 이상) + DB 점검 40시간 없음
 brief "브리프 🟡 주의 — 예산 85% 예상 + DB 점검 40시간 없음" "$FIX" "${COMMON[@]}" NEON_BUDGET_USD=3.67 \
   UPTIME_LAST_FULL="$(ISO $((NOW - 144000)))" UPTIME_FULL_24H=0 UPTIME_FULL_EXEC_24H=0
@@ -395,6 +430,10 @@ while [ $# -gt 0 ]; do
 done
 if [ "$tg" = "1" ]; then
   cat > /dev/null
+  if [ "${TG_FAKE_FAIL:-0}" = "1" ]; then
+    [ -z "$out" ] || printf '{"ok":false,"error_code":401,"description":"Unauthorized"}' > "$out"
+    printf '401'; exit 0
+  fi
   n="$(find "$TG_DIR" -name '*.txt' | wc -l | tr -d ' ')"
   printf '%s' "$text" > "$TG_DIR/$n.txt"; printf '%s' "${pm:-plain}" > "$TG_DIR/$n.pm"
   [ -z "$out" ] || printf '{"ok":true}' > "$out"
@@ -526,11 +565,19 @@ D="$(mk_broken brieftypo brieftypo)"; fi_env "$D"
 BST="$(mktemp -d)"
 RC=0
 ( cd "$D" && env PATH="$FI/bin:$PATH" RUNNER_TEMP="$D/rt" NEON_FIXTURE_DIR="$FIX" NEON_PROJECT_ID=proj-fixture NOW_EPOCH="$NOW" \
-    STATE_DIR="$BST" GITHUB_STEP_SUMMARY= TELEGRAM_BOT_TOKEN=x TELEGRAM_CHAT_ID=1 "${COMMON[@]}" \
+    STATE_DIR="$BST" GITHUB_STEP_SUMMARY= GITHUB_OUTPUT="$D/rt/ghout" TELEGRAM_BOT_TOKEN=x TELEGRAM_CHAT_ID=1 "${COMMON[@]}" \
     bash .github/scripts/neon-usage.sh ) > "$D/neon.log" 2>&1 || RC=$?
 assert_eq "(b') neon-usage.sh 종료코드 1 + plain 1건" "1|1|plain" "$RC|$(fi_count)|$(cat "$TG_DIR/0.pm" 2>/dev/null)"
+# 템플릿 고장으로 job 은 실패해도 브리프는 갔다 → sent=1 (schedule-gate 가 대비책 2통째를 막는 근거)
+assert_eq "(b') 전송 표식 sent=1" "sent=1" "$(grep '^sent=' "$D/rt/ghout" 2>/dev/null || true)"
 shown_plain "고장 주입 (b') 브리프 변수 오타 — neon-usage.sh 가 실제 보낸 브리프 (plain)" "$(cat "$TG_DIR/0.txt" 2>/dev/null)"
 assert_eq "(b') 기본 형식 브리프 첫 줄" "🟢 simparty 일일 브리프 10-13 (결제 기간 13일째 / 31일)" "$(sed -n 1p "$TG_DIR/0.txt" 2>/dev/null)"
+# 텔레그램 전송 실패면 표식 없음 → 대비책이 다시 보낸다
+fi_env "$D"; : > "$D/rt/ghout"; RC=0
+( cd "$D" && env PATH="$FI/bin:$PATH" TG_FAKE_FAIL=1 RUNNER_TEMP="$D/rt" NEON_FIXTURE_DIR="$FIX" NEON_PROJECT_ID=proj-fixture NOW_EPOCH="$NOW" \
+    STATE_DIR="$BST" GITHUB_STEP_SUMMARY= GITHUB_OUTPUT="$D/rt/ghout" TELEGRAM_BOT_TOKEN=x TELEGRAM_CHAT_ID=1 "${COMMON[@]}" \
+    bash .github/scripts/neon-usage.sh ) > "$D/neon.log" 2>&1 || RC=$?
+assert_eq "(b'') 전송 실패 → 종료코드 1·표식 없음" "1|0" "$RC|$(grep -c '^sent=' "$D/rt/ghout" 2>/dev/null || true)"
 rm -rf "$BST"
 
 # (c) monitor-lib.sh 자체 고장 — selffail 스텝 서브셸이 죽어도 인라인 plain 으로 전송
