@@ -18,6 +18,10 @@ Neon(PostgreSQL) 사용량을 확인하고, 이상이 있으면 텔레그램으�
   감시가 그보다 자주 깨우면 compute 가 계속 켜져 과금되기 때문입니다. `uptime-mode.sh` 가 시간대 밖·재실행·
   최근 45분 안의 다른 full 실행이 있으면 full 을 quick 으로 낮춥니다.
 - 감시 대상: `https://simparty.fly.dev`(BE, Fly.io) · `https://simparty.shop`(FE, Cloudflare Pages).
+- ⏰ GitHub 무료 cron 은 지연·드롭이 심합니다(2026-10 실측: 09:17 브리프가 13~15시 도착, uptime 하루 5~13회).
+  그래서 **Cloudflare Workers Cron 예약 실행기**(`scheduler/`)가 같은 시각에 워크플로를 `workflow_dispatch` 로 깨우는 경로를
+  준비해 두었습니다. 위 GitHub cron 은 대비책으로 남습니다. 어느 쪽이 주 경로인지는 repo 변수 `SCHEDULER` 가 정합니다
+  (없으면 `github` = 위 표 그대로). 전환·되돌리기 절차와 대비책 동작은 [`scheduler/README.md`](scheduler/README.md) 에 있습니다.
 
 ## 경보 규칙 요약
 
@@ -67,7 +71,9 @@ Settings → Secrets and variables → Actions → **Secrets** 에 등록합니�
 
 선택 **Variables**(없으면 기본값): `NEON_PROJECT_ID`(없으면 이름 `simparty` 로 검색), `NEON_BUDGET_USD`(15),
 `NEON_CU_HOUR_USD`(0.106), `NEON_STORAGE_GB_USD`(0.35), `NEON_MIN_CU`(0.25), `REPO_IDLE_WARN_DAYS`(45),
-`HB_UPTIME_MAX_H`(6), `HB_FULL_MAX_H`(36), `SITE_FRESH_H`(3).
+`HB_UPTIME_MAX_H`(6), `HB_FULL_MAX_H`(36), `SITE_FRESH_H`(3),
+`SCHEDULER`(`github` | `cloudflare`, 기본 github — 예약 실행 주 경로, `scheduler/README.md`),
+`UPTIME_DESIGN_FULL`(13 — 브리프의 "DB체크 설계 N회". Worker 브리프는 Worker 의 `FULL_EVERY_HOURS` 로 계산하므로 보통 비워 둠).
 Variables 값은 run 로그에 보이므로 비밀이 아닌 값만 둡니다.
 
 ## 왜 공개 repo 인가
@@ -123,6 +129,9 @@ gh workflow run neon-usage.yml -R thebluepigu/simparty-monitor -f mode=preview  
 gh workflow run neon-usage.yml -R thebluepigu/simparty-monitor -f mode=normal   # 정기 실행과 동일 (기준점 갱신)
 ```
 
+수동 실행은 입력 `source` 가 기본값 `manual` 이라 브리프의 정기 실행 집계에 들어가지 않습니다. `source=cf` 는 Cloudflare
+예약 실행기 전용이므로 손으로 고르지 마세요(정기 실행으로 세어 멈춘 감시를 가릴 수 있음).
+
 ## 텔레그램 메시지 조정
 
 모든 텔레그램 본문은 `.github/scripts/telegram-format.sh` 한 파일에서 만듭니다(파일 머리의 '조정 가이드' 참고 — 어느 함수가
@@ -149,16 +158,19 @@ gh workflow run neon-usage.yml -R thebluepigu/simparty-monitor -f mode=normal   
 .github/
   workflows/uptime.yml       업타임 감시 (10분)
   workflows/neon-usage.yml   Neon 사용량 일일 브리프
-  workflows/ci.yml           push·PR 검사 (bash -n · YAML · 템플릿 테스트)
+  workflows/ci.yml           push·PR 검사 (bash -n · YAML · 템플릿·대비책 테스트 · Worker 테스트)
+  scripts/schedule-gate.sh   정기 실행 중복 확인 (SCHEDULER=cloudflare 일 때 Worker 와 겹치는 schedule run 건너뜀)
   scripts/uptime-mode.sh     quick/full 모드 결정 (DB 보호)
   scripts/uptime.sh          체크 + 장애 이슈·텔레그램 상태머신
   scripts/neon-usage.sh      Neon API 조회 + 브리프
   scripts/monitor-lib.sh     공용 함수 (텔레그램 전송 — HTML·plain 재전송, 템플릿 오류 시 plain 대체, KST 시각)
   scripts/telegram-format.sh 텔레그램 메시지 템플릿 (모든 본문 — 조정은 여기만)
-  scripts/tests/             템플릿 단위·고장 주입 테스트, 렌더 미리보기, ci-check.sh + Neon fixture
+  scripts/tests/             템플릿 단위·고장 주입 테스트, 렌더 미리보기, 대비책·heartbeat 테스트, ci-check.sh + Neon fixture
+scheduler/                   Cloudflare Workers Cron 예약 실행기 (worker.js · wrangler.toml · 운영 절차 README)
 ```
 
 ⚠️ cron 문자열은 여러 곳이 같아야 합니다. full `4 2-14 * * *` 은 `uptime.yml` 의 `on.schedule`·`run-name`·
 `uptime-mode.sh` 의 `FULL_CRON` 세 곳, quick 두 줄은 `on.schedule` 과 `QUICK_CRONS` 가 같아야 합니다.
+Cloudflare 쪽은 `scheduler/wrangler.toml` 의 `crons` 와 `scheduler/worker.js` 의 `UPTIME_CRON`·`BRIEF_CRON` 이 같아야 합니다(테스트가 확인).
 
 > 첫 스케줄 실행 확인용 push: 2026-09-27 22:15 KST (schedule 은 기본 브랜치 push 이후 활성화되는 경우가 있음)

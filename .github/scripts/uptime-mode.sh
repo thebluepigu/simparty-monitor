@@ -3,6 +3,10 @@
 #
 # 입력 env: EVENT(github.event_name) SCHED(github.event.schedule) INPUT_MODE RUN_ID RUN_ATTEMPT GH_REPO GH_TOKEN
 #
+# Cloudflare 예약 실행기(scheduler/worker.js)의 run 은 workflow_dispatch(mode=quick|full, source=cf)로 들어와 수동 실행과 같은
+# 경로(INPUT_MODE)를 탄다 — Worker 가 보낸 full 도 아래 1)~3) 가드를 그대로 거친다(run-name 'uptime · cf · full' 도 '· full' 로 끝남).
+# schedule run 을 건너뛸지(Worker 가 살아 있으면)는 이 스크립트가 아니라 앞 스텝 schedule-gate.sh 가 정한다.
+#
 # 🔴 DB 경유(full) 는 "영업시간(UTC 02~14시)·시간당 1회" 를 cron 에만 맡기지 않고 여기서 강제한다. fail-safe = quick.
 #   1) UTC 02~14시 밖이면(스케줄 지연 포함) quick
 #   2) 재실행(run_attempt>1)이면 quick — 1차 시도가 이미 DB 를 건드렸다
