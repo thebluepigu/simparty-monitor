@@ -8,16 +8,16 @@
 #
 #   함수                  메시지                                                  부르는 곳
 #   ------------------    ------------------------------------------------------  ---------------------------
-#   fmt_brief             Neon 일일 브리프 (✅ / ⚠️ / 🔴)                          neon-usage.sh §5
+#   fmt_brief             Neon 일일 브리프 (🟢 / 🟡 / 🔴 — 섹션별 신호등 + 첫 줄)    neon-usage.sh §5
 #   fmt_outage_detected   🔴 장애 감지 — kind=new(신규) | reopen(재발) |            uptime.sh
 #                            selffail(GitHub 이슈 기록 실패 → 직접 알림)
-#   fmt_flap              🟠 장애·복구 반복 (12시간 안 재발 2회째)                   uptime.sh
+#   fmt_flap              🟡 장애·복구 반복 (12시간 안 재발 2회째)                   uptime.sh
 #   fmt_outage_ongoing    🔴 장애 지속 — kind=remind(6h 재알림) | retry(전송 실패분   uptime.sh
 #                            재시도) | flap_remind(반복 중 재알림)
-#   fmt_outage_expanded   🔴 장애 확대 (아직 알리지 않은 체크가 새로 실패)            uptime.sh
+#   fmt_outage_expanded   🔴 장애 확대 (아직 알리지 않은 점검이 새로 실패)            uptime.sh
 #   fmt_recovered         🟢 복구                                                   uptime.sh
-#   fmt_selffail          ⚠️ 감시 자체 실패                                          uptime.yml · neon-usage.yml
-#   fmt_test              🧪 test-alert 머리 메시지                                   uptime.sh test-alert
+#   fmt_selffail          🟡 감시 자체 실패                                          uptime.yml · neon-usage.yml
+#   fmt_test              [샘플] test-alert 머리 메시지 (이모지 없음)                 uptime.sh test-alert
 #   fmt_sample            test-alert 샘플 4종(detected·recovered·selffail·flap)       uptime.sh test-alert
 #
 #   - 각 함수는 key=value 인자만 받는다(순서 무관, 빠진 키 = 빈 값). 예:
@@ -25,19 +25,31 @@
 #   - results = uptime.sh 의 체크 결과 TSV (name \t ok(1/0) \t http \t 초 \t detail)
 #   - 시각 인자(now·since·pass_at)는 epoch 또는 ISO-8601 둘 다 받는다. 출력은 전부 KST.
 #
+# ■ 신호등 (상태 이모지는 이 셋만 쓴다 — 2026-10-30)
+#
+#   🟢 정상 · 복구   🟡 주의(지금 당장 장애는 아니지만 확인 필요 · 감시 자체 실패 · 장애·복구 반복)   🔴 문제 · 장애
+#   - 옛 기호 ✅ ⚠️ 🟠 ≈ 🧪 ⏭ 는 쓰지 않는다(테스트가 렌더 본문에서 검사). 근사치·판정 생략은 글자로 쓴다.
+#   - 브리프: 섹션 머리 = "🟢 <b>사이트</b>: 정상" 처럼 색을 맨 앞에(왼쪽 끝에 색이 세로로 줄 서 훑어보기 쉽게).
+#     첫 줄 = 가장 나쁜 색 + 한 문장 판정(여러 개면 "외 N건", 나머지는 바로 아래 "- 🟡 …" 줄).
+#     판정(어느 섹션이 무슨 색인지)은 neon-usage.sh 가 brief.json .level 에 계산한다 — 여기서는 표현만.
+#     문제 줄을 하나 더 만들려면 neon-usage.sh 의 .level 조건과 fmt_brief 의 probs 를 같이 고친다(색만 있고 문장이
+#     없으면 첫 줄이 "확인할 항목이 있어요" 로 대신 나온다).
+#
 # ■ 서식 규칙 (parse_mode=HTML)
 #
 #   - 허용 태그는 <b> <i> <code> <pre> <a href> 만. 동적 값(체크 이름·HTTP 코드·오류 문구·이슈 제목·URL)은
 #     반드시 h(=html_escape, & < > 치환)를 거쳐 넣는다. href 값은 _ha(따옴표까지 치환).
 #     태그 짝이 틀리면 텔레그램이 400 "can't parse entities" → tg_send 가 태그를 벗긴 plain 으로 1회 재전송한다(내용은 감).
-#   - 첫 줄 = [태그] 이모지 + <b>한 문장 판정</b>. 둘째 줄 = 언제·무엇(평문). 섹션 사이 빈 줄 1개.
-#   - 섹션 제목은 <b>제목</b>, 항목은 "· " 로 시작. 숫자는 <code>…</code>.
-#   - 표는 <pre>…</pre> 고정폭 — 한글은 2칸이라 정렬이 깨지므로 표 안에는 ASCII 만 쓴다.
+#   - 첫 줄 = [태그] 신호등 + <b>한 문장 판정</b>. 둘째 줄 = 언제·무엇(평문). 섹션 사이 빈 줄 1개.
+#   - 섹션 제목은 <b>제목</b>, 항목 줄은 "- " 로 시작, 한 줄 안 항목 구분은 " / ". 숫자는 <code>…</code>.
+#   - 말은 쉽게: 영어 식별자는 필요할 때 괄호로 한 번만 — "서버 응답(liveness)", "DB 사용량(CU-h)", "DB 자동 절전".
+#   - 표는 <pre>…</pre> 고정폭 — 한글은 2칸이라 정렬이 깨지므로 표 안에는 ASCII 만 쓰고, 바로 아래 범례 한 줄로 한글 설명.
 #   - 시각: 같은 날 "HH:MM", 어제 "어제 HH:MM", 그 외 "MM-DD HH:MM" (fmt_when) / 상대 "N분 전·N시간 전·N일 전" (fmt_ago).
 #   - 한 줄 바꾸려면 해당 L+=( … ) 줄만 고친다. 줄을 빼려면 그 줄을 지우면 된다(빈 줄 L+=("") 짝 주의).
 #
 # ■ 미리 보기
 #   로컬:  bash .github/scripts/tests/telegram-format.test.sh        # 렌더 전문 + html_escape 단위 테스트
+#          bash .github/scripts/tests/telegram-format.test.sh --plain  # 텔레그램에 보이는 모습(태그 제거)
 #   커밋 전: bash .github/scripts/tests/ci-check.sh                  # CI(.github/workflows/ci.yml)와 같은 검사 — bash -n·YAML·테스트
 #   이 파일이 깨져도(문법 오류·변수 오타) 알림은 monitor-lib.sh 가 옛 plain 형식으로 대체해 보내고 job 을 실패로 표시한다.
 #   실전송: gh workflow run neon-usage.yml -f mode=preview  (실데이터 브리프, "[미리보기]" · 상태 저장 안 함)
@@ -109,15 +121,26 @@ fmt_dur() {
     if [ $((m % 60)) -eq 0 ]; then printf '%d시간' $((m / 60)); else printf '%d시간 %d분' $((m / 60)) $((m % 60)); fi
   else printf '%d일 %d시간' $((m / 1440)) $(((m % 1440) / 60)); fi
 }
-# 다음 full(DB 경유) 슬롯 epoch — KST 11:04~23:04 매시 04분 (uptime.yml full cron '4 2-14 * * *' 과 같은 뜻)
+# full 주기(시간) — repo 변수 FULL_EVERY_HOURS 를 워크플로가 env 로 내려 준다. 해석은 uptime-mode.sh 와 같다
+#   (공백 제거 후 1~3자리 정수가 아니면 1, 0 = DB 포함 점검 안 함 — 자릿수 상한은 산술 overflow 로 음수가 되는 것 방지)
+_fmt_full_every() {
+  local n; n="$(printf '%s' "${FULL_EVERY_HOURS:-}" | tr -d '[:space:]')"
+  if [[ "$n" =~ ^[0-9]{1,3}$ ]]; then printf '%d' $((10#$n)); else printf 1; fi
+}
+# 다음 full(DB 경유) 슬롯 epoch — KST 11:04~23:04 의 04분 중 (KST시 − 11) % FULL_EVERY_HOURS == 0 인 시각
+#   (uptime-mode.sh 의 (UTC시 − 2) % N 과 같은 뜻 — N=1 이면 매시 = uptime.yml full cron '4 2-14 * * *').
+#   N=0(DB 포함 점검 끔)이면 빈 값 — 호출하는 쪽이 "다음 예정" 을 말하지 않는다
 _fmt_next_full() {
-  local k=$(( $1 + 32400 )) day hr t
+  local k=$(( $1 + 32400 )) day hr t n d
+  n="$(_fmt_full_every)"; [ "$n" -gt 0 ] || return 0
   day=$(( k / 86400 * 86400 ))
-  for hr in 11 12 13 14 15 16 17 18 19 20 21 22 23; do
-    t=$(( day + hr * 3600 + 240 ))
-    if [ "$t" -gt "$k" ]; then printf '%s' $(( t - 32400 )); return; fi
+  for d in 0 1; do
+    for hr in 11 12 13 14 15 16 17 18 19 20 21 22 23; do
+      [ $(( (hr - 11) % n )) -eq 0 ] || continue
+      t=$(( day + d * 86400 + hr * 3600 + 240 ))
+      if [ "$t" -gt "$k" ]; then printf '%s' $(( t - 32400 )); return; fi
+    done
   done
-  printf '%s' $(( day + 86400 + 11 * 3600 + 240 - 32400 ))
 }
 _csv_has() { case ",$1," in *",$2,"*) return 0 ;; esac; return 1; }
 # "a,b" → "<code>a</code>, <code>b</code>"
@@ -126,51 +149,80 @@ _fmt_codes() {
   for x in $1; do [ -n "$x" ] && out+=("<code>$(h "$x")</code>"); done
   local j; j="$(printf '%s, ' "${out[@]}")"; printf '%s' "${j%, }"
 }
+# "liveness,robots" → "서버 응답(liveness), 화면 응답(robots)" — _txt 는 평문(제목처럼 나중에 h 할 곳), _fmt_labels 는 h 처리본
+_fmt_labels_txt() {
+  local IFS=, x out=()
+  for x in $1; do [ -n "$x" ] && out+=("$(_fmt_label "$x")"); done
+  local j; j="$(printf '%s, ' "${out[@]}")"; printf '%s' "${j%, }"
+}
+_fmt_labels() { h "$(_fmt_labels_txt "$1")"; }
 _fmt_join() { local sep="$1"; shift; local j=""; local x; for x in "$@"; do [ -n "$x" ] || continue; j="${j:+$j$sep}$x"; done; printf '%s' "$j"; }
+# 신호등: ok|warn|crit → 🟢|🟡|🔴
+_fmt_light() { case "${1-}" in crit) printf '🔴' ;; warn) printf '🟡' ;; *) printf '🟢' ;; esac; }
+# 예약 실행 주체 — 워크플로가 repo 변수 vars.SCHEDULER 를 env SCHEDULER 로 내려 준다(여기서는 읽기만, 모르는 값 = github).
+#   github     = GitHub 무료 cron: 설계 10분 주기지만 실측 몇 시간씩 밀린다 → 주기를 단정하지 말고 "늦을 수 있음" 을 덧붙인다
+#   cloudflare = Workers Cron 정시 실행: 10분 주기 그대로 말해도 된다
+#   해석은 schedule-gate.sh 와 같다(대소문자·공백 무시) — ' Cloudflare ' 를 여기서만 github 로 보면 안내가 실제 동작과 어긋난다
+_fmt_sched() {
+  case "$(printf '%s' "${SCHEDULER:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in cloudflare) printf cloudflare ;; *) printf github ;; esac
+}
+_FMT_GH_DELAY='점검은 설계상 10분마다지만 지금은 GitHub 무료 스케줄 지연으로 몇 시간 간격이 될 수 있어요 — 위 시각도 그만큼 늦을 수 있음'
+# 점검 모드 → 쉬운 말. $2=long 이면 식별자를 괄호로 한 번
+_fmt_mode() {
+  local m="${1-}" t
+  case "$m" in
+    quick) t="빠른 점검" ;;
+    full)  t="DB 포함 점검" ;;
+    '')    printf '?'; return ;;
+    *)     printf '%s' "$(h "$m")"; return ;;
+  esac
+  if [ "${2-}" = long ]; then printf '%s(%s)' "$t" "$m"; else printf '%s' "$t"; fi
+}
 
 # ---- 업타임 체크: 이름별 설명 ---------------------------------------------------
 # 영향 — "어떤 화면이 안 열리나". 체크를 추가하면 여기와 _fmt_verdict 에 한 줄씩.
 # 체크 식별자 → 한글 라벨 (문장 줄에서 사용. <pre> 표는 폭 유지를 위해 영문 식별자 그대로 + 아래 범례)
 _fmt_label() {
   case "$1" in
-    liveness)   printf 'BE 생존(liveness)' ;;
-    robots)     printf 'FE 응답(robots)' ;;
-    readiness)  printf 'DB 준비(readiness)' ;;
+    liveness)   printf '서버 응답(liveness)' ;;
+    robots)     printf '화면 응답(robots)' ;;
+    readiness)  printf 'DB 연결(readiness)' ;;
     categories) printf '의상 API(categories)' ;;
     home)       printf '홈 화면(home)' ;;
     *)          printf '%s' "$1" ;;
   esac
 }
-_FMT_LEGEND='liveness=BE 생존 · robots=FE 응답 · readiness=DB 준비 · categories=의상 API · home=홈 화면'
+_FMT_LEGEND='liveness=서버 응답 / robots=화면 응답 / readiness=DB 연결 / categories=의상 API / home=홈 화면'
 _fmt_impact() {
   case "$1" in
-    liveness)   printf 'BE(API 서버) 전체 — 의상 목록·상세·예약, 관리자 화면 전부 데이터가 안 나옴' ;;
-    robots)     printf 'FE(웹 서버) 전체 — simparty.shop 접속 자체가 안 됨' ;;
-    readiness)  printf 'DB 연결 — BE 는 살아 있지만 의상·예약 데이터 조회 실패' ;;
-    categories) printf '고객 의상 API(DB 경유) — 홈 카테고리 칩·의상 목록이 비어 보임' ;;
-    home)       printf 'SSR 홈 — simparty.shop 첫 화면 렌더 실패' ;;
-    *)          printf '%s 체크 실패' "$(h "$1")" ;;
+    liveness)   printf '서버(API) 전체 — 의상 목록·상세·예약, 관리자 화면 모두 데이터가 안 나와요' ;;
+    robots)     printf '웹 화면 전체 — simparty.shop 접속 자체가 안 돼요' ;;
+    readiness)  printf '서버는 살아 있지만 DB 를 못 읽어 의상·예약 데이터가 안 나와요' ;;
+    categories) printf '고객 의상 목록(DB 경유) — 홈 카테고리·의상 목록이 비어 보여요' ;;
+    home)       printf 'simparty.shop 첫 화면(SSR)이 안 그려져요' ;;
+    *)          printf '%s 점검 실패' "$(h "$1")" ;;
   esac
 }
 # 실패 집합 → 한 문장 판정 (첫 줄 굵게 부분). **평문**을 돌려준다 — 부르는 쪽이 h 로 한 번만 이스케이프(이중 이스케이프 방지)
 _fmt_verdict() {
   local f="$1"
-  if _csv_has "$f" liveness && _csv_has "$f" robots; then printf '사이트 전체 접속 불가 (BE·FE 모두 무응답)'
-  elif _csv_has "$f" liveness; then printf 'BE(API) 응답 없음'
-  elif _csv_has "$f" robots; then printf 'FE(웹) 응답 없음'
-  elif _csv_has "$f" readiness || _csv_has "$f" categories; then printf 'DB 경유 조회 실패'
-  elif _csv_has "$f" home; then printf '홈 화면(SSR) 렌더 실패'
-  elif [ -n "$f" ]; then printf '체크 실패: %s' "$f"
-  else printf '실패 체크 없음'; fi
+  if _csv_has "$f" liveness && _csv_has "$f" robots; then printf '사이트 전체 접속 불가 (서버·화면 모두 응답 없음)'
+  elif _csv_has "$f" liveness; then printf '서버(API) 응답 없음'
+  elif _csv_has "$f" robots; then printf '웹 화면 응답 없음'
+  elif _csv_has "$f" readiness; then printf 'DB 연결 실패 (서버가 DB 를 못 읽어요)'
+  elif _csv_has "$f" categories; then printf '의상 API 실패'
+  elif _csv_has "$f" home; then printf '홈 화면이 안 열림'
+  elif [ -n "$f" ]; then printf '점검 실패: %s' "$f"
+  else printf '실패한 점검 없음'; fi
 }
 _FMT_DB_CHECKS="readiness,categories,home"
 
-# 결과 TSV → <pre> 표 + 실패 상세 줄. $1 results
+# 결과 TSV → <pre> 표 + 범례 + 실패 상세 줄. $1 results
 #   표는 원문으로 칸을 맞춘 뒤 통째로 h — 텔레그램은 &lt; 를 한 글자(<)로 보여 주므로 원문 기준 패딩이 화면 정렬과 같다
 #   (이스케이프 후 패딩하면 &lt; 가 4칸으로 세여 오히려 어긋난다 — 테스트 'pre 표 정렬')
 _fmt_results() {
   local file="$1" name ok code t detail rows dets=()
-  [ -s "$file" ] || { printf '<i>(이번 실행 체크 결과 없음)</i>'; return; }
+  [ -s "$file" ] || { printf '<i>(이번 실행 점검 결과 없음)</i>'; return; }
   rows="$(printf '%-11s %-4s %4s %7s' check stat http time)"
   while IFS=$'\t' read -r name ok code t detail; do
     [ -n "$name" ] || continue
@@ -182,11 +234,11 @@ _fmt_results() {
         "HTTP $code") detail="HTTP $code 응답" ;;
         "") detail="실패" ;;
       esac
-      [ "$code" = "000" ] && [ "${detail#네트워크}" = "$detail" ] && detail="무응답 · $detail"
-      dets+=("· <code>$(h "$name")</code> — <i>$(h "${detail:0:140}")</i>")
+      [ "$code" = "000" ] && [ "${detail#네트워크}" = "$detail" ] && detail="응답 없음 / $detail"
+      dets+=("- <code>$(h "$name")</code>: <i>$(h "${detail:0:140}")</i>")
     fi
   done < "$file"
-  printf '<pre>%s</pre>' "$(h "$rows")"
+  printf '<pre>%s</pre>\n<i>%s</i>' "$(h "$rows")" "$(h "$_FMT_LEGEND")"
   [ "${#dets[@]}" -eq 0 ] || printf '\n%s' "${dets[@]}"
 }
 _fmt_failed_of() { awk -F'\t' '$2=="0"{print $1}' "$1" 2>/dev/null | paste -sd, - 2>/dev/null || true; }
@@ -198,14 +250,14 @@ _fmt_links() {
     a+=("<a href=\"$(_ha "$issue")\">$(h "$itext")</a>")
   fi
   [[ "$run" == https://* ]] && b+=("<a href=\"$(_ha "$run")\">실행 로그</a>")
-  _fmt_join ' · ' "${a[@]}" "${b[@]}"
+  _fmt_join ' / ' "${a[@]}" "${b[@]}"
 }
 _fmt_print() { local IFS=$'\n'; printf '%s' "${L[*]}"; }
 # 0.123 → "12%"
 _fmt_pct() { jq -rn --arg x "$1" '($x | tonumber * 100 | round | tostring) + "%"' 2>/dev/null || printf '%s' "$1"; }
 
 # =============================================================================
-# 업타임 알림 (🔴 · 🟠) — 공통 골격: ① 판정 ② 체크 결과 표 ③ 영향 ④ 다음 동작 ⑤ 링크
+# 업타임 알림 (🔴 · 🟡) — 공통 골격: ① 판정 ② 점검 결과 표 ③ 영향 ④ 다음 동작 ⑤ 링크
 # =============================================================================
 # 인자: kind results now mode issue run since failed(이월 포함 실패 집합, 생략 = results 의 실패)
 #       new_fails remind_h reopen_min flap_hold flap_hold_min reopens tag issue_text
@@ -221,34 +273,35 @@ _fmt_outage() {
   down_min=$(( (now - since) / 60 )); [ "$down_min" -ge 0 ] || down_min=0
   verdict="$(_fmt_verdict "$failed")"
   local when; when="$(fmt_when "$now" "$now")"
+  local nf_label; nf_label="$(_fmt_labels_txt "${a[new_fails]-}")"
 
-  # ① 판정 — kind 별 첫 줄·둘째 줄
+  # ① 판정 — kind 별 첫 줄·둘째 줄 (둘째 줄은 평문, 마지막에 통째로 h)
   case "$kind" in
     new)         emoji="🔴"; title="simparty 장애 감지 — $verdict"
-                 sub="$when KST 감지 · ${mode:-?} 체크 · 10초 뒤 재시도 후에도 실패" ;;
+                 sub="$when KST 감지 / $(_fmt_mode "$mode" long) / 10초 뒤 다시 해 봐도 실패" ;;
     reopen)      emoji="🔴"; title="simparty 장애 재발 — $verdict"
-                 sub="$when KST 감지 · 복구 후 ${reopen_h}시간 안 재발이라 같은 이슈를 다시 열었습니다" ;;
+                 sub="$when KST 감지 / 복구 후 ${reopen_h}시간 안에 다시 나서 같은 이슈를 다시 열었어요" ;;
     selffail)    emoji="🔴"; title="simparty 장애 감지 — $verdict"
-                 sub="$when KST 감지 · ⚠️ GitHub 이슈 기록 실패 — 상태 추적 없이 직접 보내는 알림" ;;
-    flap)        emoji="🟠"; title="simparty 장애·복구 반복 — 12시간 안 재발 2회째"
-                 sub="$when KST · 지금 상태: $verdict" ;;
+                 sub="$when KST 감지 / GitHub 이슈 기록이 안 돼 상태 추적 없이 직접 보내는 알림" ;;
+    flap)        emoji="🟡"; title="simparty 장애·복구 반복 — 12시간 안 재발 2회째"
+                 sub="$when KST / 지금 상태: $verdict" ;;
     remind)      emoji="🔴"; title="simparty 장애 지속 — 다운 약 $(fmt_dur "$down_min")"
-                 sub="$verdict · $(fmt_when "$since" "$now") 부터 · ${remind_h}시간 재알림" ;;
+                 sub="$verdict / $(fmt_when "$since" "$now") 부터 / ${remind_h}시간마다 다시 알림" ;;
     retry)       emoji="🔴"; title="simparty 장애 지속 — 다운 약 $(fmt_dur "$down_min")"
-                 sub="$verdict · $(fmt_when "$since" "$now") 부터 · 직전 알림이 전송 실패해 다시 보냄" ;;
+                 sub="$verdict / $(fmt_when "$since" "$now") 부터 / 직전 알림이 전송 실패해 다시 보냄" ;;
     flap_remind) emoji="🔴"; title="simparty 장애 반복 중 — 다운 약 $(fmt_dur "$down_min")"
-                 sub="$verdict · ${remind_h}시간 재알림 (재발·복구 알림은 억제 중)" ;;
-    expanded)    emoji="🔴"; title="simparty 장애 확대 — 새로 실패: ${a[new_fails]-?}"
-                 sub="$verdict · 다운 약 $(fmt_dur "$down_min") ($(fmt_when "$since" "$now") 부터)" ;;
+                 sub="$verdict / ${remind_h}시간마다 다시 알림 (재발이 잦아 재발마다 바로 알리지는 않는 중)" ;;
+    expanded)    emoji="🔴"; title="simparty 장애 확대 — 새로 실패: ${nf_label:-?}"
+                 sub="$verdict / 다운 약 $(fmt_dur "$down_min") ($(fmt_when "$since" "$now") 부터)" ;;
     *)           emoji="🔴"; title="simparty 장애 — $verdict"; sub="$when KST" ;;
   esac
   local -a L; L=("${tag}${emoji} <b>$(h "$title")</b>" "$(h "$sub")")
 
-  # ② 체크 결과
-  L+=("" "<b>체크 결과</b> (${mode:-?} · $when KST)" "$(_fmt_results "$res")" "<i>$(h "$_FMT_LEGEND")</i>")
+  # ② 점검 결과
+  L+=("" "<b>점검 결과</b> ($(_fmt_mode "$mode") / $when KST)" "$(_fmt_results "$res")")
   local carried; carried="$(jq -rn --arg a "$failed" --arg b "$ran_failed" '($a|split(",")|map(select(.!=""))) - ($b|split(",")) | join(",")' 2>/dev/null || true)"
   if [ -n "$carried" ]; then
-    L+=("· 이번 실행에서 다시 보지 못한 실패: $(_fmt_codes "$carried") — DB 경유라 full 실행에서만 재확인")
+    L+=("- 이번 점검에서 다시 확인 못 한 실패: $(_fmt_labels "$carried") — DB 를 거치는 점검이라 DB 포함 점검에서만 다시 확인")
   fi
 
   # ③ 영향
@@ -258,8 +311,8 @@ _fmt_outage() {
   for c in $failed; do
     [ -n "$c" ] || continue
     dep=""
-    if _csv_has "$failed" liveness && _csv_has "$_FMT_DB_CHECKS" "$c"; then dep=" (BE 다운의 결과)"; fi
-    L+=("· <b>$(h "$(_fmt_label "$c")")</b> — $(_fmt_impact "$c")$dep")
+    if _csv_has "$failed" liveness && _csv_has "$_FMT_DB_CHECKS" "$c"; then dep=" (서버가 멈춘 탓)"; fi
+    L+=("- <b>$(h "$(_fmt_label "$c")")</b>: $(_fmt_impact "$c")$dep")
   done
   IFS="$IFS_OLD"
 
@@ -268,26 +321,43 @@ _fmt_outage() {
   local remind_at; remind_at=$(( now + remind_h * 3600 ))
   case "$kind" in
     selffail)
-      L+=("· 이슈 기록이 안 되는 동안 같은 알림을 1→3→6시간 간격으로 반복합니다")
-      L+=("· GitHub API 가 회복되면 평소 흐름(장애 이슈·재알림·🟢 복구)으로 돌아갑니다") ;;
+      L+=("- 이슈 기록이 안 되는 동안 같은 알림을 1→3→6시간 간격으로 다시 보내요")
+      L+=("- GitHub API 가 회복됐을 때 아직 장애 중이면 평소 흐름(장애 이슈 / 다시 알림 / 🟢 복구)으로 돌아가요")
+      L+=("- 그사이 사이트가 먼저 회복되면: 열린 장애 이슈가 있었고 그 장애로 🔴·🟡 를 보낸 적이 있으면 API 회복 뒤 🟢 + close, 아니면 따로 🟢 는 없어요") ;;
     flap)
-      L+=("· 이후 재발·복구 텔레그램은 억제 — 장애가 이어지면 <b>$(fmt_when "$remind_at" "$now")</b> KST(${remind_h}시간 뒤)부터 ${remind_h}시간마다만 재알림")
-      L+=("· close 조건 강화: 전부 통과가 <b>${hold_min}분</b> 이어져야 🟢 + 이슈 close") ;;
+      L+=("- 장애가 이어지면 <b>$(fmt_when "$remind_at" "$now")</b> KST(${remind_h}시간 뒤)에 다시 알림")
+      L+=("- 아직 알리지 않은 점검이 새로 실패하면 '확대' 알림 1건 (직전 알림 1시간 뒤부터)")
+      L+=("- 복구 조건 강화: 모두 통과가 <b>${hold_min}분</b> 이어져야 🟢 복구 알림 + 이슈 close")
+      L+=("- 닫힌 뒤 ${reopen_h}시간 안에 또 재발하고 그때 최근 12시간 재발이 2번 이상이면 바로 알리지 않아요 — 직전 🔴·🟡 알림 ${remind_h}시간 뒤에만 다시 알림 (알리지 않은 재발은 🟢 도 없음)") ;;
     *)
-      L+=("· 장애가 이어지면 <b>$(fmt_when "$remind_at" "$now")</b> KST(${remind_h}시간 뒤) 재알림")
-      [ "$kind" = "flap_remind" ] || L+=("· 아직 알리지 않은 체크가 새로 실패하면 '확대' 1건 (직전 알림 1시간 뒤부터)")
+      L+=("- 장애가 이어지면 <b>$(fmt_when "$remind_at" "$now")</b> KST(${remind_h}시간 뒤)에 다시 알림")
+      L+=("- 아직 알리지 않은 점검이 새로 실패하면 '확대' 알림 1건 (직전 알림 1시간 뒤부터)")
       if [ "$kind" = "flap_remind" ] || [ "${a[flap_hold]-}" = "1" ]; then
-        L+=("· 반복 장애라 전부 통과가 <b>${hold_min}분</b> 이어져야 🟢 + 이슈 close")
+        L+=("- 반복 장애라 모두 통과가 <b>${hold_min}분</b> 이어져야 🟢 + 이슈 close")
       else
-        L+=("· 실패 체크가 연속 2회(약 10분 간격) 전부 통과하면 🟢 복구 알림 + 이슈 자동 close")
+        if [ "$(_fmt_sched)" = cloudflare ]; then
+          L+=("- 실패한 점검이 연속 2번(약 10분 간격) 모두 통과하면 🟢 복구 알림 + 이슈 자동 close")
+        else
+          L+=("- 실패한 점검이 연속 2번 모두 통과하면 🟢 복구 알림 + 이슈 자동 close")
+        fi
       fi
-      [ "$kind" = "reopen" ] && L+=("· 12시간 안에 또 재발하면 🟠 1건 뒤 재발·복구 알림은 억제") ;;
+      [ "$kind" = "reopen" ] && L+=("- 닫힌 뒤 ${reopen_h}시간 안에 또 재발하면 🟡 1건(이번 재발이 12시간을 넘겼으면 🔴), 최근 12시간 안 3번째 재발부터는 바로 알리지 않아요(직전 🔴·🟡 알림 ${remind_h}시간 뒤에만)") ;;
   esac
   local dbf=""
   for c in readiness categories home; do _csv_has "$failed" "$c" && dbf="${dbf:+$dbf,}$c"; done
   if [ -n "$dbf" ] && [ "$kind" != "selffail" ]; then
-    L+=("· $(_fmt_codes "$dbf") 는 DB 경유라 full 실행(다음 <b>$(fmt_when "$(_fmt_next_full "$now")" "$now")</b> KST)에서만 다시 확인 → 그 재통과로 복구 확정")
+    local nf; nf="$(_fmt_next_full "$now")"
+    if [ -n "$nf" ]; then
+      L+=("- DB 를 거치는 점검($(_fmt_labels "$dbf"))은 DB 포함 점검에서만 다시 확인해요 (다음 예정 <b>$(fmt_when "$nf" "$now")</b> KST) → 그때 통과해야 복구 확정")
+    else
+      # N=0 이면 uptime-mode.sh 가 수동 mode=full 까지 quick 으로 강등하고, uptime.sh 는 DB 경유 실패를 full 이 돌 때까지
+      # 이월하므로 이 장애는 저절로 닫히지 않는다 — 실제로 되는 해법만 안내한다
+      L+=("- DB 를 거치는 점검($(_fmt_labels "$dbf"))은 DB 포함 점검에서만 다시 확인하는데, 지금 DB 포함 점검이 꺼져 있어요(FULL_EVERY_HOURS=0 — 수동 mode=full 도 빠른 점검으로 바뀜) → 이대로는 장애가 저절로 닫히지 않아요")
+      L+=("- 해결: repo 변수 FULL_EVERY_HOURS 를 1 로 바꾼 뒤 KST 11~23시에 mode=full 수동 실행(2·3 이면 그 주기 시각에만 돌아요), 또는 장애 이슈를 직접 close")
+    fi
   fi
+  # GitHub cron 지연 — 위 '다시 알림'·'다음 예정' 시각은 점검이 돌아야 지켜진다(주기를 단정하지 않기 — 2026-10-30 검증 M1)
+  [ "$(_fmt_sched)" = cloudflare ] || L+=("- $_FMT_GH_DELAY")
 
   # ⑤ 링크
   local links; links="$(_fmt_links "${a[issue]-}" "${a[run]-}" "${a[issue_text]-}")"
@@ -301,7 +371,7 @@ fmt_outage_ongoing()  { _fmt_outage kind=remind "$@"; }     # kind=remind|retry|
 fmt_outage_expanded() { _fmt_outage "$@" kind=expanded; }
 
 # =============================================================================
-# 🟢 복구 — ① 판정 ② 장애 요약 ③ 지금 체크 결과 ④ 링크
+# 🟢 복구 — ① 판정 ② 장애 요약 ③ 지금 점검 결과 ④ 링크
 # =============================================================================
 # 인자: results now mode issue run since(장애 시작) pass_at(1차 전부 통과) seen(이번 장애에서 실패했던 체크 누적)
 #       reopens(최근 12시간 재발 횟수) flap_hold(1=반복 장애 강화 close) flap_hold_min reopen_min tag issue_text
@@ -313,68 +383,76 @@ fmt_recovered() {
   pass_at="$(_epoch "${a[pass_at]-}")"; pass_at="${pass_at:-$now}"
   down_min=$(( (pass_at - since) / 60 )); [ "$down_min" -ge 0 ] || down_min=0
 
-  local hold_min="${a[flap_hold_min]:-120}" reopen_h=$(( ${a[reopen_min]:-360} / 60 )) how="연속 2회 전부 통과"
+  local hold_min="${a[flap_hold_min]:-120}" reopen_h=$(( ${a[reopen_min]:-360} / 60 )) how="연속 2번 모두 통과"
   # 반복 장애(flap-hold)는 close 조건이 '전부 통과가 hold_min 분 지속' 이다 (uptime.sh FLAP_HOLD_MIN)
   [ "${a[flap_hold]-}" != "1" ] || how="전부 통과가 ${hold_min}분 이어짐 (반복 장애 강화 조건)"
   local -a L; L=("${tag}🟢 <b>simparty 복구 — 다운 약 $(fmt_dur "$down_min")</b>"
-     "$(fmt_when "$now" "$now") KST 확인 · $how")
+     "$(fmt_when "$now" "$now") KST 확인 / $how")
   L+=("" "<b>장애 요약</b>")
-  L+=("· 시작 <code>$(fmt_when "$since" "$now")</code> → 첫 통과 <code>$(fmt_when "$pass_at" "$now")</code> → 복구 확정 <code>$(fmt_when "$now" "$now")</code> KST")
+  L+=("- 시작 <code>$(fmt_when "$since" "$now")</code> → 첫 통과 <code>$(fmt_when "$pass_at" "$now")</code> → 복구 확정 <code>$(fmt_when "$now" "$now")</code> KST")
   if [ -n "$seen" ]; then
-    L+=("· 실패했던 체크: $(_fmt_codes "$seen")")
-    L+=("· 그동안 영향: $(h "$(_fmt_verdict "$seen")")")
+    L+=("- 실패했던 점검: $(_fmt_labels "$seen")")
+    L+=("- 그동안 영향: $(h "$(_fmt_verdict "$seen")")")
   fi
   local n="${a[reopens]:-0}"
   case "$n" in ''|*[!0-9]*) n=0 ;; esac
-  [ "$n" -eq 0 ] || L+=("· 최근 12시간 재발 <code>$n</code>회 — 또 반복되면 재발·복구 알림은 억제됩니다")
-  L+=("· 장애 이슈는 지금 자동 close — ${reopen_h}시간 안에 재발하면 같은 이슈를 다시 엽니다")
-  L+=("" "<b>지금 체크 결과</b> (${a[mode]:-?})" "$(_fmt_results "${a[results]-}")")
+  # 재발 규칙은 '닫힌 뒤 reopen_h 시간 안' 의 재발에만 해당(그보다 늦으면 새 장애로 🔴 바로). 횟수는 최근 12시간 재오픈 기준이라
+  # 앞선 재발이 12시간을 넘기면 🟡 대신 🔴 가 될 수 있다 — 어긋나도 알림이 늘어나는 쪽이다
+  if [ "$n" -eq 1 ]; then L+=("- 최근 12시간 재발 <code>$n</code>번 — ${reopen_h}시간 안에 또 재발하면 🟡 1건(앞 재발이 12시간을 넘겼으면 🔴)")
+  elif [ "$n" -ge 2 ]; then L+=("- 최근 12시간 재발 <code>$n</code>번 — ${reopen_h}시간 안에 또 재발하고 그때도 최근 12시간 재발이 2번 이상이면 바로 알리지 않아요(직전 🔴·🟡 알림 ${a[remind_h]:-6}시간 뒤에만, 알리지 않은 재발은 🟢 도 없음)"); fi
+  L+=("- 장애 이슈는 지금 자동 close — ${reopen_h}시간 안에 재발하면 같은 이슈를 다시 열고, 그보다 늦으면 새 장애로 🔴 바로 알림")
+  L+=("" "<b>지금 점검 결과</b> ($(_fmt_mode "${a[mode]-}"))" "$(_fmt_results "${a[results]-}")")
   local links; links="$(_fmt_links "${a[issue]-}" "${a[run]-}" "${a[issue_text]-}")"
   [ -z "$links" ] || L+=("" "$links")
   _fmt_print
 }
 
 # =============================================================================
-# ⚠️ 감시 자체 실패 — 사이트가 아니라 감시가 끝까지 못 돈 경우
+# 🟡 감시 자체 실패 — 사이트가 아니라 감시가 끝까지 못 돈 경우
 # =============================================================================
 # 인자: workflow(uptime|neon-usage) mode reason(여러 줄) run suppress_h(기본 6) now tag
 fmt_selffail() {
   local -A a=(); _fmt_args a "$@"
-  local wf="${a[workflow]:-?}" mode="${a[mode]-}" reason="${a[reason]-}" sh="${a[suppress_h]:-6}" now next hint
+  local wf="${a[workflow]:-?}" mode="${a[mode]-}" reason="${a[reason]-}" sh="${a[suppress_h]:-6}" now next hint delay
   now="$(_epoch "${a[now]-}")"; now="${now:-$(_fmt_now)}"
-  local -a L; L=("${a[tag]-}⚠️ <b>감시 자체 실패 — $(h "$wf")${mode:+ ($(h "$mode"))}</b>"
-     "$(fmt_when "$now" "$now") KST · 사이트 상태가 아니라 감시 스크립트 쪽 문제입니다")
+  local -a L; L=("${a[tag]-}🟡 <b>감시 자체 실패 — $(h "$wf")${mode:+ ($(h "$mode"))}</b>"
+     "$(fmt_when "$now" "$now") KST / 사이트가 아니라 감시 스크립트 쪽 문제예요")
   L+=("" "<b>사유</b>")
   if [ -n "$reason" ]; then L+=("<pre>$(h "${reason:0:900}")</pre>"); else L+=("<i>(사유 기록 없음 — 실행 로그 확인)</i>"); fi
   L+=("" "<b>영향</b>")
   if [ "$wf" = "neon-usage" ]; then
-    L+=("· 오늘 Neon 브리프(사용량·autosuspend 판정)가 빠졌습니다")
-    next="내일 09:17 KST 정기 실행"
-    hint="NEON_API_KEY 만료·권한 · 텔레그램 시크릿 · Neon API 장애"
+    L+=("- 오늘 일일 브리프(DB 사용량 / DB 자동 절전 판정)가 빠졌어요")
+    next="내일 09:17 KST 정기 브리프가"   # 조사까지 — 앞말 받침에 따라 이/가가 달라서
+    hint="NEON_API_KEY 만료·권한 / 텔레그램 시크릿 / Neon API 장애"
+    delay="지금은 GitHub 무료 스케줄 지연으로 정기 브리프가 오후에 올 수 있어요"
   else
-    L+=("· 이번 실행은 장애를 판정하지 못했습니다 — 그 사이 사이트가 내려갔어도 알림이 없었을 수 있음")
-    next="다음 정기 실행(10분 주기)"
-    hint="권한(issues: write) · 텔레그램 시크릿 · GitHub API 장애"
+    L+=("- 이번 점검은 장애 여부를 판정하지 못했어요 — 그 사이 사이트가 멈췄어도 알림이 없었을 수 있어요")
+    next="다음 정기 점검이"
+    [ "$(_fmt_sched)" != cloudflare ] || next="다음 정기 점검(10분 뒤)이"
+    hint="권한(issues: write) / 텔레그램 시크릿 / GitHub API 장애"
+    delay="정기 점검은 설계상 10분마다지만 지금은 GitHub 무료 스케줄 지연으로 몇 시간 걸릴 수 있어요"
   fi
   L+=("" "<b>다음 동작</b>")
-  L+=("· 같은 알림은 <b>${sh}시간</b> 억제 (GitHub 실패 메일은 매번 발송)")
-  L+=("· ${next}이 성공하면 자동 정상화 — 별도 🟢 알림은 없습니다")
-  L+=("· 반복되면 실행 로그 확인: $hint")
+  L+=("- 같은 알림은 <b>${sh}시간</b> 동안 다시 보내지 않아요 (GitHub 실패 메일은 매번 발송)")
+  L+=("- ${next} 성공하면 자동으로 정상화 — 따로 🟢 알림은 없어요")
+  [ "$(_fmt_sched)" = cloudflare ] || L+=("- $delay")
+  L+=("- 반복되면 실행 로그 확인: $hint")
   local links; links="$(_fmt_links "" "${a[run]-}")"
   [ -z "$links" ] || L+=("" "$links")
   _fmt_print
 }
 
 # =============================================================================
-# 🧪 test-alert 머리 + 샘플 4종 (fixture — 실제 체크·이슈와 무관)
+# test-alert 머리(이모지 없이 [샘플]) + 샘플 4종 (fixture — 실제 체크·이슈와 무관)
 # =============================================================================
 fmt_test() {
   local -A a=(); _fmt_args a "$@"
   local now; now="$(_epoch "${a[now]-}")"; now="${now:-$(_fmt_now)}"
-  local -a L; L=("🧪 <b>[샘플] 텔레그램 알림 미리보기 — 실제 장애 아님</b>"
-     "$(fmt_when "$now" "$now") KST · 연동 확인 겸 알림 서식 샘플")
-  L+=("" "이어서 샘플 4건이 옵니다: 🔴 장애 감지 · 🟢 복구 · ⚠️ 감시 자체 실패 · 🟠 장애·복구 반복")
-  L+=("문구·줄바꿈 조정은 <code>.github/scripts/telegram-format.sh</code> 한 파일에서 합니다.")
+  local -a L; L=("<b>[샘플] 텔레그램 알림 미리보기 — 실제 장애 아님</b>"
+     "$(fmt_when "$now" "$now") KST / 연동 확인 겸 알림 서식 샘플")
+  L+=("" "이어서 샘플 4건이 와요: 🔴 장애 감지 / 🟢 복구 / 🟡 감시 자체 실패 / 🟡 장애·복구 반복")
+  L+=("색 뜻: 🟢 정상 / 🟡 주의(확인 필요) / 🔴 문제·장애")
+  L+=("문구·줄바꿈 조정은 <code>.github/scripts/telegram-format.sh</code> 한 파일에서 해요.")
   local links; links="$(_fmt_links "" "${a[run]-}")"
   [ -z "$links" ] || L+=("" "$links")
   _fmt_print
@@ -413,21 +491,24 @@ fmt_sample() {
 }
 
 # =============================================================================
-# Neon 일일 브리프 — ① 판정 ② 사이트 ③ Neon 사용·비용 ④ autosuspend ⑤ 감시 자체
+# Neon 일일 브리프 — ① 판정 ② 사이트 ③ DB 사용량과 비용 ④ DB 자동 절전 ⑤ 감시 자체 ⑥ 다음 브리프
 # =============================================================================
 # 인자: json=<neon-usage.sh 가 만든 brief.json 경로> tag(옵션, 예: "[미리보기] ")
-# brief.json 의 값·판정 플래그는 neon-usage.sh 가 계산한다(이 함수는 표현만). 기준값을 바꾸려면 neon-usage.sh.
+# brief.json 의 값·판정 플래그·섹션 신호등(.level)은 neon-usage.sh 가 계산한다(이 함수는 표현만). 기준값을 바꾸려면 neon-usage.sh.
 fmt_brief() {
   local -A a=(); _fmt_args a "$@"
   local json="${a[json]-}"
-  [ -s "$json" ] || { printf '⚠️ <b>Neon 브리프 렌더 실패 — 입력 없음</b>'; return 0; }
+  [ -s "$json" ] || { printf '🟡 <b>일일 브리프 렌더 실패 — 입력 없음</b>'; return 0; }
   # 스칼라 값을 B_* 셸 변수로 (@sh 인용 — eval 안전). null → 빈 문자열
   local B_now B_preview B_project B_el B_tot B_note B_cu_apx B_cuh B_cuproj B_quota B_cost B_budget B_over B_tx B_st
-  local B_as_bad B_hj B_hnd B_fon B_hrs B_dj B_dratio B_dwhy B_actsrc B_pratio
+  local B_cpct B_near B_bwarn B_bset B_day B_site_stale B_site_warn_h
+  local B_as_bad B_hj B_hnd B_fon B_hrs B_dj B_dratio B_dwhy B_actsrc B_pratio B_dbasis B_dhours
   local B_site_known B_site_open B_inc_num B_inc_url B_inc_failed B_inc_since
-  local B_up_at B_full_at B_up_max B_full_max B_up_bad B_full_bad B_runs B_full24 B_fullx B_dr B_df
-  local B_up_unknown B_up_fresh B_site_fresh_h
-  local B_idle B_idle_warn B_idle_bad
+  local B_up_at B_full_at B_up_max B_full_max B_up_bad B_full_bad B_full_unknown B_runs B_full24 B_fullx B_dr B_df
+  local B_up_unknown B_up_fresh B_site_fresh_h B_rwarn B_runs_low B_full_low
+  local B_idle B_idle_warn B_idle_bad B_idle_unknown B_sched
+  local B_cf_stale B_cf_unknown B_sched_bad B_cf_at B_cf24 B_fb24
+  local B_lv_site B_lv_cost B_lv_as B_lv_watch B_lv_all
   eval "$(jq -r '
     def s: if . == null then "" else tostring end;
     def kv($k; $v): "\($k)=\($v | s | @sh)";
@@ -435,136 +516,226 @@ fmt_brief() {
     kv("B_el"; .period.elapsed), kv("B_tot"; .period.total), kv("B_note"; .period.note),
     kv("B_cu_apx"; .cu.approx), kv("B_cuh"; .cu.hours), kv("B_cuproj"; .cu.projected), kv("B_quota"; .cu.quota_pct),
     kv("B_cost"; .cost.projected), kv("B_budget"; .cost.budget), kv("B_over"; .cost.over),
+    kv("B_cpct"; .cost.pct), kv("B_near"; .cost.near // false), kv("B_bwarn"; .cost.warn_pct // 80),
+    # false 값은 // 로 대체하면 안 된다(false // x = x) — 키 유무로 고른다
+    kv("B_bset"; if (.cost // {}) | has("budget_set") then .cost.budget_set else ((.cost.budget // 0) > 0) end), kv("B_day"; .period.day),
+    kv("B_site_stale"; if (.hb // {}) | has("site_stale") then .hb.site_stale else ((.hb.uptime_fresh // false) | not) end),
+    kv("B_site_warn_h"; .hb.site_warn_h // .hb.site_fresh_h // 3),
     kv("B_tx"; .transfer_gb), kv("B_st"; .storage_gb),
     kv("B_as_bad"; .as.bad), kv("B_hj"; .as.hour_judged), kv("B_hnd"; .as.hour_nodata),
     kv("B_fon"; .as.full_on), kv("B_hrs"; .as.hours), kv("B_dj"; .as.delta_judged),
     kv("B_dratio"; .as.delta_ratio), kv("B_dwhy"; .as.delta_why), kv("B_actsrc"; .as.act_src), kv("B_pratio"; .as.period_ratio),
+    kv("B_dbasis"; .as.delta_basis), kv("B_dhours"; .as.delta_hours),
     kv("B_site_known"; (.site != null)), kv("B_site_open"; (.site.open // false)),
     kv("B_inc_num"; .site.number), kv("B_inc_url"; .site.url), kv("B_inc_failed"; .site.failed), kv("B_inc_since"; .site.since),
     kv("B_up_at"; .hb.uptime_at), kv("B_full_at"; .hb.full_at), kv("B_up_max"; .hb.uptime_max_h), kv("B_full_max"; .hb.full_max_h),
-    kv("B_up_bad"; .hb.uptime_bad), kv("B_full_bad"; .hb.full_bad),
+    kv("B_up_bad"; .hb.uptime_bad), kv("B_full_bad"; .hb.full_bad), kv("B_full_unknown"; .hb.full_unknown // (.hb.full_at == null)),
     kv("B_up_unknown"; .hb.uptime_unknown // (.hb.uptime_at == null)), kv("B_up_fresh"; .hb.uptime_fresh // false),
     kv("B_site_fresh_h"; .hb.site_fresh_h // 3),
     kv("B_runs"; .hb.runs24), kv("B_full24"; .hb.full24), kv("B_fullx"; .hb.full_exec24), kv("B_dr"; .hb.design_runs), kv("B_df"; .hb.design_full),
-    kv("B_idle"; .repo.idle_days), kv("B_idle_warn"; .repo.warn_days), kv("B_idle_bad"; .repo.bad)
+    kv("B_rwarn"; .hb.runs_warn_pct // 0), kv("B_runs_low"; .hb.runs_low // false), kv("B_full_low"; .hb.full_low // false),
+    kv("B_idle"; .repo.idle_days), kv("B_idle_warn"; .repo.warn_days), kv("B_idle_bad"; .repo.bad),
+    kv("B_idle_unknown"; .repo.unknown // (.repo.idle_days == null)),
+    kv("B_sched"; .sched // "github"),
+    kv("B_cf_stale"; .scheduler.stale // false), kv("B_cf_unknown"; .scheduler.unknown // false), kv("B_sched_bad"; .scheduler.bad // false),
+    kv("B_cf_at"; .scheduler.cf_at), kv("B_cf24"; .scheduler.cf24), kv("B_fb24"; .scheduler.fb24),
+    kv("B_lv_site"; .level.site // "ok"), kv("B_lv_cost"; .level.cost // "ok"), kv("B_lv_as"; .level.as // "ok"),
+    kv("B_lv_watch"; .level.watch // "ok"), kv("B_lv_all"; .level.overall // "ok")
   ' "$json")"
   local now="${B_now:-$(_fmt_now)}" apx="" act_label
-  [ "$B_cu_apx" = "true" ] && apx="≈"
-  if [ "$B_actsrc" = "branch" ]; then act_label="기본 브랜치"; else act_label="프로젝트 합계"; fi
+  [ "$B_cu_apx" = "true" ] && apx=" (근사치)"
+  # Neon 용어(기본 브랜치·프로젝트 합계)는 괄호로만 — 일반인이 읽는 말은 "운영 DB" / "DB 전체"
+  if [ "$B_actsrc" = "branch" ]; then act_label="운영 DB(기본 브랜치)"; else act_label="DB 전체(프로젝트 합계)"; fi
+  # 켜져 있던 비율의 창 — 결제 기간 전환 직후는 기간 시작부터, 그 밖은 직전 판정 기준점부터(보통 하루, 수동·짧은 간격이면 더 김)
+  local win="직전 판정 이후"
+  if [ "$B_dbasis" = "period" ]; then win="결제 기간 시작 이후"
+  elif [ -n "$B_dhours" ]; then win="최근 ${B_dhours}시간"; fi
+  local up_ago="" full_ago="" full_h=""
+  [ -z "$B_up_at" ] || up_ago="$(fmt_ago $((now - B_up_at)))"
+  if [ -n "$B_full_at" ]; then full_ago="$(fmt_ago $((now - B_full_at)))"; full_h=$(( (now - B_full_at) / 3600 )); fi
 
-  # ---- ① 판정: 실제 문제만 첫 줄 이모지에 반영 (심각한 것부터, 여러 개면 "외 N건") ----
-  local probs=() level=ok
+  # ---- ① 판정: 문제·주의를 심각한 것부터 "색|문장" 으로 모은다 (색 판정은 brief.json .level — 여기 조건은 문장 고르기용) ----
+  local probs=()
   if [ "$B_as_bad" = "true" ]; then
-    level=crit
-    if [ "$B_hj" = "true" ] && [ "${B_fon:-0}" -ge 1 ] 2>/dev/null; then probs+=("Neon autosuspend 미작동 의심 — 24h 중 ${B_fon}시간 내내 켜짐")
-    else probs+=("Neon autosuspend 미작동 의심 — 직전 대비 가동률 $(_fmt_pct "$B_dratio")"); fi
+    if [ "$B_hj" = "true" ] && [ "${B_fon:-0}" -ge 1 ] 2>/dev/null; then probs+=("crit|DB 자동 절전 미작동 의심 — 최근 24시간 중 ${B_fon}시간이 한 시간 내내 켜져 있었어요")
+    else probs+=("crit|DB 자동 절전 미작동 의심 — ${win} 켜져 있던 비율 $(_fmt_pct "$B_dratio")"); fi
   fi
-  if [ "$B_site_open" = "true" ]; then level=crit; if [ -n "$B_inc_failed" ]; then probs+=("사이트 장애 중 — ${B_inc_failed} 실패"); else probs+=("사이트 장애 중 — 복구 확인 대기"); fi; fi
-  if [ "$B_over" = "true" ]; then [ "$level" = crit ] || level=warn; probs+=("Neon 예산 초과 예상 — \$${B_cost} / \$${B_budget}"); fi
-  if [ "$B_up_unknown" = "true" ]; then [ "$level" = crit ] || level=warn; probs+=("업타임 감시 마지막 성공 확인 불가 — 감시가 도는지 직접 확인")
-  elif [ "$B_up_bad" = "true" ]; then [ "$level" = crit ] || level=warn; probs+=("업타임 감시가 ${B_up_max}시간 넘게 멈춤 — 장애를 못 잡는 상태"); fi
-  if [ "$B_full_bad" = "true" ]; then [ "$level" = crit ] || level=warn; probs+=("DB 경유 체크가 ${B_full_max}시간 넘게 없음"); fi
-  if [ "$B_idle_bad" = "true" ]; then [ "$level" = crit ] || level=warn; local left=$((60 - B_idle)); [ "$left" -ge 0 ] || left=0
-    probs+=("저장소 ${B_idle}일 무커밋 — ${left}일 뒤 감시 스케줄 자동 정지"); fi
-  local emoji head
-  case "$level" in crit) emoji="🔴" ;; warn) emoji="⚠️" ;; *) emoji="✅" ;; esac
+  if [ "$B_site_open" = "true" ]; then
+    if [ -n "$B_inc_failed" ]; then probs+=("crit|사이트 장애 중 — $(_fmt_labels_txt "$B_inc_failed") 실패")
+    else probs+=("crit|사이트 장애 중 — 복구 확인 대기"); fi
+  fi
+  if [ "$B_over" = "true" ]; then probs+=("warn|예산을 넘을 것 같아요 — 기간 말 예상 \$${B_cost} / 예산 \$${B_budget}")
+  elif [ "$B_near" = "true" ] && [ "${B_cpct:-0}" -ge 100 ] 2>/dev/null; then probs+=("warn|예산에 거의 닿을 것 같아요 — 기간 말 예상 \$${B_cost} / 예산 \$${B_budget} (${B_cpct}%)")
+  elif [ "$B_near" = "true" ]; then probs+=("warn|예산의 ${B_bwarn}%를 넘을 것 같아요 — 기간 말 예상 \$${B_cost} / 예산 \$${B_budget} (${B_cpct}%)"); fi
+  if [ "$B_up_unknown" = "true" ]; then probs+=("warn|사이트 점검 마지막 성공을 확인할 수 없어요 — 감시가 도는지 직접 확인")
+  elif [ "$B_up_bad" = "true" ]; then probs+=("warn|사이트 점검이 ${B_up_max}시간 넘게 멈췄어요 — 장애가 나도 알림이 안 와요")
+  elif [ "$B_site_known" = "true" ] && [ "$B_site_open" != "true" ] && [ "$B_site_stale" = "true" ]; then
+    probs+=("warn|사이트 마지막 확인이 ${up_ago} — 지금 정상인지 몰라요"); fi
+  [ "$B_site_known" = "true" ] || probs+=("warn|사이트 장애 여부 확인 불가 — 장애 이슈 조회 실패")
+  if [ "$B_full_bad" = "true" ]; then probs+=("warn|DB 포함 점검이 ${full_h}시간째 없어요 (기준 ${B_full_max}시간)")
+  elif [ "$B_full_unknown" = "true" ]; then probs+=("warn|DB 포함 점검 기록을 확인할 수 없어요"); fi
+  # 어느 횟수가 미달인지 문장에 그대로 — 전체는 통과인데 "점검 횟수가 적어요" 라고 하면 같은 줄 숫자와 어긋나 보인다(L3)
+  local low_what=""
+  if [ "$B_runs_low" = "true" ] && [ "$B_full_low" = "true" ]; then low_what="24시간 점검 횟수와 DB 포함 점검 횟수가"
+  elif [ "$B_runs_low" = "true" ]; then low_what="24시간 점검 횟수가"
+  elif [ "$B_full_low" = "true" ]; then low_what="24시간 DB 포함 점검 횟수가"; fi
+  [ -z "$low_what" ] || probs+=("warn|${low_what} 예정의 ${B_rwarn}%보다 적어요 — 예약 실행이 제대로 도는지 확인")
+  # 예약 실행기(Cloudflare Worker) — 멈추면 GitHub 대비책이 이어 받아 감시는 계속되지만 시각이 다시 불규칙해진다(조용히 넘어가지 않게)
+  [ "$B_cf_stale" != "true" ] || probs+=("warn|예약 실행기(Cloudflare)가 1시간 넘게 안 돌았어요 — GitHub 대비책으로 도는 중이라 점검 시각이 불규칙해요 (토큰 만료 확인)")
+  [ "$B_cf_unknown" != "true" ] || probs+=("warn|예약 실행기(Cloudflare) 상태를 확인할 수 없어요 — 실행 목록 조회 실패")
+  [ "$B_sched_bad" != "true" ] || probs+=("warn|repo 변수 SCHEDULER 값이 잘못됐어요 — github 또는 cloudflare 만 돼요 (지금은 GitHub 스케줄로 동작)")
+  if [ "$B_idle_bad" = "true" ]; then local left=$((60 - B_idle)); [ "$left" -ge 0 ] || left=0
+    probs+=("warn|감시 저장소 ${B_idle}일째 커밋 없음 — ${left}일 뒤 감시가 자동으로 멈춰요 (사소한 커밋 1건 필요)")
+  elif [ "$B_idle_unknown" = "true" ]; then probs+=("warn|감시 저장소 마지막 커밋을 확인할 수 없어요 — 60일 무활동이면 감시가 멈추니 직접 확인"); fi
+  [ "$B_lv_as" != "warn" ] || probs+=("warn|DB 자동 절전 판정 생략 — 판정할 데이터가 부족해요")
+
+  local head
   if [ ${#probs[@]} -eq 0 ]; then
-    if [ -n "$B_cost" ]; then head="이상 없음 — 예상 비용 \$${B_cost} / 예산 \$${B_budget}, autosuspend 작동"
-    else head="이상 없음 — autosuspend 작동 (예상 비용은 기간 2일차부터)"; fi
+    if [ "$B_lv_all" != "ok" ]; then head="확인할 항목이 있어요 — 아래 색 표시 확인"
+    elif [ -n "$B_cost" ] && [ "$B_bset" = "true" ]; then head="이상 없음 — 기간 말 예상 비용 \$${B_cost} / 예산 \$${B_budget}, DB 자동 절전 작동 중"
+    elif [ -n "$B_cost" ]; then head="이상 없음 — 기간 말 예상 비용 \$${B_cost}, DB 자동 절전 작동 중"
+    else head="이상 없음 — DB 자동 절전 작동 중 (기간 말 예상 비용은 결제 기간 2일째부터)"; fi
   else
-    head="${probs[0]}"; [ ${#probs[@]} -le 1 ] || head+=" 외 $(( ${#probs[@]} - 1 ))건"
+    head="${probs[0]#*|}"; [ ${#probs[@]} -le 1 ] || head+=" 외 $(( ${#probs[@]} - 1 ))건"
   fi
   local tag="${a[tag]-}"; [ "$B_preview" = "true" ] && [ -z "$tag" ] && tag="[미리보기] "
-  local -a L; L=("${tag}${emoji} <b>$(h "$head")</b>"
-     "simparty 일일 브리프 · $(_kst "$now" %m-%d)($(_kst_wd "$now")) $(_kst "$now" %H:%M) KST")
+  local -a L; L=("${tag}$(_fmt_light "$B_lv_all") <b>$(h "$head")</b>"
+     "simparty 일일 브리프 / $(_kst "$now" %m-%d)($(_kst_wd "$now")) $(_kst "$now" %H:%M) KST")
   if [ ${#probs[@]} -gt 1 ]; then
-    local p; for p in "${probs[@]:1}"; do L+=("· $(h "$p")"); done
+    local p; for p in "${probs[@]:1}"; do L+=("- $(_fmt_light "${p%%|*}") $(h "${p#*|}")"); done
   fi
 
   # ---- ② 사이트 ----
   L+=("")
+  local site_c; site_c="$(_fmt_light "$B_lv_site")"
   if [ "$B_site_known" != "true" ]; then
-    L+=("<b>사이트</b> — 확인 불가 (장애 이슈 조회 실패)")
+    L+=("$site_c <b>사이트</b>: 확인 불가 (장애 이슈 조회 실패)")
   elif [ "$B_site_open" = "true" ]; then
     local since_e; since_e="$(_epoch "$B_inc_since")"
-    L+=("<b>사이트</b> — 🔴 장애 중")
+    L+=("$site_c <b>사이트</b>: 장애 중")
     if [ -n "$B_inc_failed" ]; then
-      L+=("· 실패: $(_fmt_codes "$B_inc_failed")${since_e:+ · $(fmt_when "$since_e" "$now") 부터 ($(fmt_dur $(( (now - since_e) / 60 ))))}")
+      L+=("- 실패: $(_fmt_labels "$B_inc_failed")${since_e:+ / $(fmt_when "$since_e" "$now") 부터 ($(fmt_dur $(( (now - since_e) / 60 ))))}")
     else
-      L+=("· 1차 전부 통과 — 다음 실행도 통과하면 🟢 복구 + close${since_e:+ ($(fmt_when "$since_e" "$now") 부터)}")
+      L+=("- 한 번 모두 통과 — 다음 점검도 통과하면 🟢 복구 + 이슈 close${since_e:+ ($(fmt_when "$since_e" "$now") 부터)}")
     fi
-    [[ "$B_inc_url" == https://* ]] && L+=("· $(_fmt_links "$B_inc_url" "")")
+    [[ "$B_inc_url" == https://* ]] && L+=("- $(_fmt_links "$B_inc_url" "")")
   elif [ "$B_up_fresh" = "true" ]; then
-    L+=("<b>사이트</b> — ✅ 정상 (열린 장애 이슈 없음)")
+    L+=("$site_c <b>사이트</b>: 정상 (열린 장애 이슈 없음)")
+  elif [ -n "$B_up_at" ] && [ "$B_site_stale" != "true" ]; then
+    # SCHEDULER=github 에서 3~6시간: '정상' 이라 단정하지는 않지만 🟡 로 올리지도 않는다(cron 지연이 일상 — neon-usage.sh §5 H1)
+    L+=("$site_c <b>사이트</b>: 열린 장애 이슈 없음 (마지막 확인 ${up_ago} — GitHub 지연으로 점검이 드문드문 돌아요)")
   elif [ -n "$B_up_at" ]; then
     # 이슈가 없어도 감시가 오래 못 돌았으면 '정상' 이라고 말하지 않는다 — 그 사이 장애는 이슈가 안 열렸을 뿐일 수 있다
-    L+=("<b>사이트</b> — 열린 장애 이슈 없음 · 마지막 확인 $(fmt_ago $((now - B_up_at))) ⚠️ <i>(${B_site_fresh_h}시간 넘게 확인 없음 — 정상 여부 모름)</i>")
+    L+=("$site_c <b>사이트</b>: 확인 필요 — 열린 장애 이슈는 없지만 마지막 확인이 ${up_ago} <i>(${B_site_warn_h}시간 넘게 확인이 없어 지금 정상인지 몰라요)</i>")
   else
-    L+=("<b>사이트</b> — 열린 장애 이슈 없음 · 마지막 확인 기록 없음 ⚠️ <i>(정상 여부 모름)</i>")
+    L+=("$site_c <b>사이트</b>: 확인 필요 — 열린 장애 이슈는 없지만 마지막 확인 기록이 없어요 <i>(정상인지 몰라요)</i>")
   fi
-  local up_line="BE 생존(liveness) · FE 응답(robots) 마지막 확인 "
+  local up_line="빠른 점검(서버 응답 / 화면 응답) 마지막 확인 "
   if [ -n "$B_up_at" ]; then up_line+="<code>$(fmt_when "$B_up_at" "$now")</code>"; else up_line+="기록 없음"; fi
-  local full_line="DB 포함 점검(readiness·의상 API·홈 화면) 마지막 확인 "
-  if [ -n "$B_full_at" ]; then full_line+="<code>$(fmt_when "$B_full_at" "$now")</code> <i>(KST 11~23시에만)</i>"; else full_line+="기록 없음"; fi
-  L+=("· $up_line" "· $full_line")
+  # 점검 묶음 이름은 알림과 같게: quick = "빠른 점검", full = "DB 포함 점검" (readiness 하나는 "DB 연결") — M3
+  local full_line="DB 포함 점검(DB 연결 / 의상 API / 홈 화면) 마지막 확인 "
+  if [ -n "$B_full_at" ]; then full_line+="<code>$(fmt_when "$B_full_at" "$now")</code> <i>(KST 11~23시에만 점검)</i>"; else full_line+="기록 없음"; fi
+  L+=("- $up_line" "- $full_line")
 
-  # ---- ③ Neon 사용·비용 ----
-  L+=("" "<b>Neon 사용·비용</b> — 결제기간 <code>${B_el}/${B_tot}</code>일차${B_note:+ $(h "$B_note")}")
-  L+=("· CU-h 누적 <code>${apx}${B_cuh}</code> → 기간말 예상 <code>${apx}${B_cuproj:-n/a}</code>${B_quota:+ · quota <code>${B_quota}%</code>}")
-  if [ -n "$B_cost" ]; then
-    local bp; bp="$(jq -rn --arg c "$B_cost" --arg b "$B_budget" 'if ($b|tonumber) > 0 then (($c|tonumber) / ($b|tonumber) * 100 | round | tostring) + "%" else "" end' 2>/dev/null || true)"
-    L+=("· 예상 비용 <code>\$${B_cost}</code> / 예산 <code>\$${B_budget}</code>${bp:+ ($bp)}$([ "$B_over" = true ] && printf ' ⚠️ 초과')")
+  # ---- ③ DB 사용량과 비용 ----
+  # N일째 = 반올림 전 경과일 내림 + 1 (neon-usage.sh period_day). 옛 brief.json 이면 elapsed(소수 1자리)로 계산
+  local cost_state day="$B_day"
+  case "$day" in ''|*[!0-9]*)
+    day="${B_el%%.*}"; case "$day" in ''|*[!0-9]*) day=0 ;; esac; day=$(( day + 1 )) ;;
+  esac
+  case "$B_tot" in ''|*[!0-9]*) ;; *) [ "$day" -le "$B_tot" ] || day="$B_tot" ;; esac   # 경과 12.0일 = 13일째
+  if [ "$B_over" = "true" ]; then cost_state="예산을 넘을 것 같아요"
+  elif [ "$B_near" = "true" ] && [ "${B_cpct:-0}" -ge 100 ] 2>/dev/null; then cost_state="예산에 거의 닿을 것 같아요"
+  elif [ "$B_near" = "true" ]; then cost_state="예산의 ${B_bwarn}%를 넘을 것 같아요"
+  elif [ -n "$B_cost" ] && [ "$B_bset" != "true" ]; then cost_state="예산 미설정 (비교 안 함)"
+  elif [ -n "$B_cost" ]; then cost_state="예산 안"
+  else cost_state="아직 판정 전 (결제 기간 2일째부터)"; fi
+  L+=("" "$(_fmt_light "$B_lv_cost") <b>DB 사용량과 비용</b> (Neon): $cost_state")
+  L+=("- 이번 결제 기간 <code>${day}</code>일째 / ${B_tot}일${B_note:+ $(h "$B_note")}")
+  L+=("- DB 사용량(CU-h) 지금까지 <code>${B_cuh}</code> → 기간 말 예상 <code>${B_cuproj:-n/a}</code>${apx}${B_quota:+ / 한도 대비 <code>${B_quota}%</code>}")
+  local bud_txt="예산 <code>\$${B_budget}</code>"; [ "$B_bset" = "true" ] || bud_txt="예산 미설정"
+  if [ -n "$B_cost" ] && [ "$B_bset" = "true" ]; then
+    local cmark="" wtxt="(${B_bwarn}%부터 🟡)"; { [ "$B_over" = true ] || [ "$B_near" = true ]; } && cmark=" 🟡"
+    [ "${B_bwarn:-0}" != "0" ] || wtxt="(넘을 것 같을 때만 🟡)"
+    L+=("- 기간 말 예상 비용 <code>\$${B_cost}</code> / ${bud_txt}${B_cpct:+ (${B_cpct}%)}${cmark} <i>${wtxt}</i>")
+  elif [ -n "$B_cost" ]; then
+    L+=("- 기간 말 예상 비용 <code>\$${B_cost}</code> / 예산 미설정 <i>(NEON_BUDGET_USD 가 0 이하라 예산 비교 안 함)</i>")
   else
-    L+=("· 예상 비용 n/a <i>(기간 시작 1일 미만 — 외삽 생략)</i> / 예산 <code>\$${B_budget}</code>")
+    L+=("- 기간 말 예상 비용 n/a <i>(결제 기간 시작 1일 미만 — 예상 생략)</i> / ${bud_txt}")
   fi
-  L+=("· 전송 <code>${B_tx} GB</code> · 스토리지 <code>${B_st} GB</code>")
-  [ -z "$apx" ] || L+=("· <i>≈ = 요금 API(v2) 미사용, compute_time 근사치</i>")
+  L+=("- 데이터 전송 <code>${B_tx} GB</code> / 저장 용량 <code>${B_st} GB</code>")
+  [ -z "$apx" ] || L+=("- <i>근사치 = 요금 API(v2)를 못 써 compute_time 으로 추정한 값</i>")
 
-  # ---- ④ autosuspend ----
+  # ---- ④ DB 자동 절전 (autosuspend) ----
   local as_state
-  if [ "$B_as_bad" = "true" ]; then as_state="🔴 미작동 의심"
-  elif [ "$B_hj" = "true" ] || [ "$B_dj" = "true" ]; then as_state="✅ 작동 중"
-  else as_state="⏭ 판정 생략"; fi
-  L+=("" "<b>autosuspend</b> — $as_state")
+  case "$B_lv_as" in crit) as_state="미작동 의심" ;; warn) as_state="판정 생략 (데이터 부족)" ;; *) as_state="작동 중" ;; esac
+  L+=("" "$(_fmt_light "$B_lv_as") <b>DB 자동 절전</b> (autosuspend): $as_state")
   if [ "$B_hj" = "true" ]; then
-    L+=("· 최근 24h 중 내내 켜져 있던 시간 <code>${B_fon}/${B_hrs}</code>시간 <i>(프로젝트 합계 · 90% 이상이면 🔴)</i>")
+    L+=("- 최근 24시간 중 한 시간 내내 켜져 있던 시간 <code>${B_fon}/${B_hrs}</code>시간 <i>(DB 전체 기준, 90% 이상이면 🔴)</i>")
   elif [ "$B_hnd" = "true" ]; then
-    L+=("· 24h 시간별 데이터 없음 — 종일 수면 또는 API 형식 변경 (판정 불가)")
+    L+=("- 시간별 데이터 없음 — 하루 종일 잠들었거나 API 형식이 바뀜 (판정 불가)")
   fi
   if [ "$B_dj" = "true" ]; then
-    L+=("· ${act_label} 직전 실행 대비 가동률 <code>$(_fmt_pct "$B_dratio")</code> <i>(90% 이상이면 🔴)</i>")
+    L+=("- ${act_label}가 켜져 있던 비율 <code>$(_fmt_pct "$B_dratio")</code> <i>(${win}, 90% 이상이면 🔴)</i>")
   else
-    L+=("· ${act_label}: $(h "$B_dwhy")${B_pratio:+ · 기간 평균 가동률 <code>$(_fmt_pct "$B_pratio")</code>}")
+    L+=("- ${act_label}: $(h "$B_dwhy")${B_pratio:+ / 이번 결제 기간 평균 켜져 있던 비율 <code>$(_fmt_pct "$B_pratio")</code>}")
   fi
   if [ "$B_as_bad" = "true" ]; then
-    L+=("· 근거: compute 가 거의 쉬지 않음 — 5분보다 잦은 DB 호출(헬스체크·감시·keepalive·스케줄러) 확인")
-  elif [ "$as_state" = "✅ 작동 중" ]; then
-    L+=("· 근거: 요청이 5분 끊기면 compute 가 잠들고 있음 → 쓴 만큼만 과금")
+    L+=("- 확인할 것: DB 가 거의 쉬지 않아요 — 5분보다 잦은 DB 호출(헬스체크 / 감시 / keepalive / 스케줄러)")
+  elif [ "$B_lv_as" = "ok" ]; then
+    L+=("- 요청이 5분 끊기면 DB 가 잠들고 있어요 → 쓴 만큼만 과금")
   fi
 
   # ---- ⑤ 감시 자체 ----
-  L+=("" "<b>감시 자체</b>")
+  local watch_state="정상"; [ "$B_lv_watch" = "ok" ] || watch_state="확인 필요"
+  L+=("" "$(_fmt_light "$B_lv_watch") <b>감시 자체</b>: $watch_state")
   local hb1 hb2
-  if [ -n "$B_up_at" ]; then hb1="uptime 최근 성공 $(fmt_ago $((now - B_up_at)))"; [ "$B_up_bad" = true ] && hb1+=" ⚠️"
-  else hb1="uptime 성공 기록 확인 불가 ⚠️"; fi
-  if [ -n "$B_full_at" ]; then hb2="DB체크 $(fmt_ago $((now - B_full_at)))"; [ "$B_full_bad" = true ] && hb2+=" ⚠️"
-  else hb2="DB체크 기록 확인 불가 ⚠️"; fi
-  L+=("· $hb1 · $hb2 <i>(⚠️ 기준 ${B_up_max}시간 / ${B_full_max}시간)</i>")
+  if [ -n "$B_up_at" ]; then hb1="사이트 점검 마지막 성공 <code>${up_ago}</code>"; [ "$B_up_bad" = true ] && hb1+=" 🟡"
+  else hb1="사이트 점검 마지막 성공 확인 불가 🟡"; fi
+  if [ -n "$B_full_at" ]; then hb2="DB 포함 점검 <code>${full_ago}</code>"; [ "$B_full_bad" = true ] && hb2+=" 🟡"
+  else hb2="DB 포함 점검 기록 확인 불가 🟡"; fi
+  L+=("- $hb1 / $hb2 <i>(이보다 오래되면 🟡: ${B_up_max}시간 / ${B_full_max}시간)</i>")
   if [ -n "$B_runs" ]; then
-    local runs_line="· 최근 24h 정기 실행 <code>${B_runs}</code>회 / 설계 ${B_dr}"
-    [ -z "$B_full24" ] || runs_line+=" · DB체크 <code>${B_fullx:-$B_full24}</code>회 / 설계 ${B_df}"
+    # 🟡 는 미달인 숫자 바로 뒤에(전체·DB 포함 점검 중 어느 쪽인지 보이게 — L3)
+    local runs_line="- 최근 24시간 점검 <code>${B_runs}</code>번 / 예정 ${B_dr}번"
+    [ "$B_runs_low" = true ] && runs_line+=" 🟡"
+    if [ -n "$B_full24" ]; then
+      runs_line+=" (DB 포함 점검 <code>${B_fullx:-$B_full24}</code>번 / 예정 ${B_df}번"
+      [ "$B_full_low" = true ] && runs_line+=" 🟡"
+      runs_line+=")"
+    fi
     L+=("$runs_line")
-    if [ "${B_dr:-0}" -gt 0 ] 2>/dev/null && [ $(( B_runs * 100 / B_dr )) -lt 50 ]; then
-      L+=("  <i>GitHub cron 이 무료 스케줄을 지연·드롭한 것 — 감시 고장 아님(위 ⚠️ 기준을 넘을 때만 문제)</i>")
+    if [ "$B_runs_low" = true ] || [ "$B_full_low" = true ]; then
+      L+=("  <i>예정의 ${B_rwarn}%보다 적으면 🟡 — 예약 실행이 제대로 도는지 확인</i>")
+    elif [ "$B_sched" = "github" ] && [ "$B_up_bad" != true ] && [ "$B_up_unknown" != true ] && [ "${B_runs:-0}" -gt 0 ] 2>/dev/null \
+         && [ "${B_dr:-0}" -gt 0 ] 2>/dev/null && [ $(( B_runs * 100 / B_dr )) -lt 50 ]; then
+      # 감시가 멈춘 날(위 🟡)·0회인 날엔 '감시 고장 아님' 이 같은 메시지의 🟡 와 모순이라 쓰지 않는다
+      L+=("  <i>GitHub 무료 스케줄이 늦거나 건너뛴 것 — 감시 고장 아님 (위 🟡 기준을 넘을 때만 문제)</i>")
     fi
   else
-    L+=("· 최근 24h 실행 횟수 확인 불가")
+    L+=("- 최근 24시간 점검 횟수 확인 불가")
   fi
+  # 예약 실행기 — cloudflare 모드에서만(github 모드엔 Worker 가 없다). 대비책 수가 늘면 Worker 가 빠뜨린 것
+  if [ "$B_sched" = "cloudflare" ]; then
+    local cf_line="- 예약 실행기(Cloudflare) 마지막 실행 "
+    if [ "$B_cf_unknown" = true ]; then cf_line+="확인 불가 🟡"
+    elif [ -n "$B_cf_at" ]; then cf_line+="<code>$(fmt_ago $((now - B_cf_at)))</code>"; else cf_line+="기록 없음"; fi
+    [ "$B_cf_stale" = true ] && cf_line+=" 🟡"
+    [ -z "$B_cf24" ] || cf_line+=" / 최근 24시간 예약 실행기 ${B_cf24}번, GitHub 대비책 ${B_fb24:-0}번"
+    L+=("$cf_line <i>(1시간 넘게 안 돌면 🟡)</i>")
+  fi
+  [ "$B_sched_bad" != "true" ] || L+=("- repo 변수 SCHEDULER 값 오류 🟡 <i>(github 또는 cloudflare — 지금은 GitHub 스케줄로 동작)</i>")
   if [ -n "$B_idle" ]; then
-    L+=("· 저장소 마지막 커밋 $(fmt_ago $((B_idle * 86400)))$([ "$B_idle_bad" = true ] && printf ' ⚠️ 사소한 커밋 1건 필요') <i>(60일 무활동이면 스케줄 자동 정지 · ${B_idle_warn}일부터 ⚠️)</i>")
+    L+=("- 감시 저장소 마지막 커밋 <code>$(fmt_ago $((B_idle * 86400)))</code>$([ "$B_idle_bad" = true ] && printf ' 🟡 사소한 커밋 1건 필요') <i>(60일 동안 커밋이 없으면 GitHub 가 감시를 자동으로 멈춤, ${B_idle_warn}일부터 🟡)</i>")
   else
-    L+=("· 저장소 마지막 커밋 확인 불가 ⚠️ <i>(60일 무활동이면 스케줄 자동 정지 — 직접 확인)</i>")
+    L+=("- 감시 저장소 마지막 커밋 확인 불가 🟡 <i>(60일 동안 커밋이 없으면 감시가 자동으로 멈춤 — 직접 확인)</i>")
   fi
+
+  # ---- ⑥ 다음 브리프 (정기 실행 시각 09:17 KST — neon-usage.yml cron '17 0 * * *') ----
+  local nday="내일"; [ "$(_kst "$now" %H%M)" -ge 917 ] 2>/dev/null || nday="오늘"
+  if [ "$B_sched" = "cloudflare" ] && [ "$B_cf_stale" != "true" ]; then L+=("" "다음 브리프: ${nday} 09:17")
+  elif [ "$B_sched" = "cloudflare" ]; then L+=("" "다음 브리프: ${nday} 09:17 예정(예약 실행기가 멈춰 있으면 GitHub 대비책이 오후에 보내요)")
+  else L+=("" "다음 브리프: ${nday} 09:17 예정(지금은 GitHub 지연으로 오후에 올 수 있음)"); fi
   _fmt_print
 }
 

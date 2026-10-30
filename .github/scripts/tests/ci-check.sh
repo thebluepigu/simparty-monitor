@@ -6,6 +6,8 @@
 #   1) .github 아래 모든 *.sh 에 bash -n (문법)
 #   2) 워크플로 YAML 파싱 + 각 스텝의 run: 블록에 bash -n (${{ … }} 식은 자리표시로 바꿔 검사)
 #   3) tests/telegram-format.test.sh --quiet (템플릿 렌더·이스케이프·전송 재시도·고장 주입)
+#   4) tests/schedule-gate.test.sh --quiet (Cloudflare 대비책 중복 확인·heartbeat 집계, 가짜 gh)
+#   5) scheduler/worker.js·lib.js node --check + worker.test.mjs (크론→dispatch 매핑, 가짜 fetch) — node 필요
 # 템플릿 문구만 바꾸는 미세 조정도 이 검사를 통과해야 main 에 올린다 — 깨진 템플릿은 감시 알림 서식을 망가뜨린다
 # (monitor-lib.sh 의 plain 대체가 알림 자체는 지켜 주지만, 서식이 옛 형식으로 떨어지고 job 이 실패로 표시된다).
 set -euo pipefail
@@ -56,6 +58,26 @@ fi
 
 echo "== 3) 템플릿 테스트"
 if bash "$HERE/telegram-format.test.sh" --quiet; then :; else FAILS=$((FAILS + 1)); fi
+
+echo "== 4) 정기 실행 중복 확인·heartbeat 테스트 (schedule-gate.sh · neon-usage hb 스텝)"
+if bash "$HERE/schedule-gate.test.sh" --quiet; then :; else FAILS=$((FAILS + 1)); fi
+
+echo "== 5) Cloudflare 예약 실행기 (scheduler/worker.js·lib.js — node --check + 단위 테스트, 가짜 fetch)"
+if [ ! -f scheduler/worker.js ]; then
+  echo "  SKIP scheduler/ 없음"
+elif ! command -v node >/dev/null 2>&1; then
+  # CI(ubuntu 러너)엔 node 가 있다 — 거기서 없으면 실패, 로컬에서 없으면 건너뜀
+  if [ -n "${CI:-}" ]; then echo "  FAIL node 없음"; FAILS=$((FAILS + 1)); else echo "  SKIP node 없음 (로컬)"; fi
+else
+  for js in scheduler/worker.js scheduler/lib.js; do
+    if node --check "$js"; then echo "  ok  node --check $js"; else echo "  FAIL node --check $js"; FAILS=$((FAILS + 1)); fi
+  done
+  if node --test scheduler/worker.test.mjs > "${TMPDIR:-/tmp}/worker-test.log" 2>&1; then
+    echo "  ok  worker.test.mjs ($(grep -E '^ℹ (pass|fail) ' "${TMPDIR:-/tmp}/worker-test.log" | tr '\n' ' '))"
+  else
+    echo "  FAIL worker.test.mjs"; sed 's/^/        /' "${TMPDIR:-/tmp}/worker-test.log" | tail -40; FAILS=$((FAILS + 1))
+  fi
+fi
 
 echo "ci-check: 실패 ${FAILS}건"
 [ "$FAILS" = "0" ]

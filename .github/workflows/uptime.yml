@@ -1,5 +1,17 @@
 name: 업타임 감시 (liveness·robots / 정밀 시간당)
-run-name: "uptime · ${{ github.event_name == 'workflow_dispatch' && inputs.mode || (github.event.schedule == '4 2-14 * * *' && 'full' || 'quick') }}"
+run-name: "uptime · ${{ inputs.source == 'cf' && 'cf · ' || '' }}${{ github.event_name == 'workflow_dispatch' && inputs.mode || (github.event.schedule == '4 2-14 * * *' && 'full' || 'quick') }}"
+
+# 예약 실행 경로 (2026-10-30, scheduler/README.md):
+#   주 경로 후보 = Cloudflare Worker(scheduler/)가 정시에 workflow_dispatch(mode=quick|full, source=cf)를 보낸다
+#   → run-name 'uptime · cf · quick|full'. 아래 on.schedule 은 지우지 않고 대비책으로 남긴다.
+#   repo 변수 SCHEDULER(없으면 github) 가 어느 쪽이 주 경로인지 정한다 — '정기 실행 중복 확인' 스텝(schedule-gate.sh):
+#     github(기본·지금) : schedule run 은 오늘과 똑같이 돈다
+#     cloudflare        : schedule run 은 최근 20분 안에 Worker run 이 있으면 건너뛰고(success, 체크 없음), 없으면 대신 돈다
+#   Worker 의 full 도 '모드 결정'(영업시간·주기·재실행·45분 가드)을 그대로 거친다. 사람의 수동 실행은 source=manual(기본).
+#   run-name 이 '· full' 로 끝나는 규칙(uptime-mode.sh·neon-usage heartbeat 가 문자열로 찾음)은 cf run 도 같다.
+#   SCHEDULER 값이 github·cloudflare 가 아니면(오타) github 으로 취급하고 '정기 실행 중복 확인' 로그에 경고를 남긴다.
+# full(DB 경유) 주기 = repo 변수 FULL_EVERY_HOURS(없으면 1 = 매시, 지금과 같음) 한 곳. uptime-mode.sh 가 Worker·schedule·수동
+#   어느 경로든 같은 주기로 강등한다(2 → KST 11·13·…·23시, 3 → 11·14·17·20·23시, 0 → 안 함). 템플릿의 복구 안내도 같은 값을 읽는다.
 
 # 목적: simparty BE(Fly)·FE(Cloudflare Pages) 다운을 텔레그램으로 알린다. 2026-09-19~25 prod 6일 다운을
 #       아무도 몰랐던 사고의 재발 방지. 상태는 GitHub Issue(label 'uptime-incident', open = 장애 중)로 관리.
@@ -16,7 +28,7 @@ run-name: "uptime · ${{ github.event_name == 'workflow_dispatch' && inputs.mode
 #   quick 으로 강등, 재실행(run_attempt>1)이면 강등, 스케줄·수동 불문 최근 45분 안에 DB 체크를 실제로 실행한
 #   다른 run('DB 경유(full) 실행 표식' 스텝 success, 또는 재실행돼 1차 시도를 확인할 수 없는 run)이 있으면 강등.
 #   ⚠️ full cron 문자열 '4 2-14 * * *' 은 on.schedule·run-name·uptime-mode.sh(FULL_CRON) 3곳이 같아야 한다.
-#      어긋나 full 이 안 돌면 neon-usage 브리프의 "DB체크 N시간 전 ⚠️" heartbeat 로 드러난다.
+#      어긋나 full 이 안 돌면 neon-usage 브리프의 "🟡 DB 포함 점검이 N시간째 없어요" heartbeat 로 드러난다.
 #   /actuator/health (DB 포함 전체 헬스)는 감시에 쓰지 않는다.
 #
 # 주기: 10분 (매시 04·14·24·34·44·54분, 시간당 6회 = 하루 144회). 이 repo 는 감시 코드만 둔 **공개 repo** 라
@@ -30,11 +42,11 @@ run-name: "uptime · ${{ github.event_name == 'workflow_dispatch' && inputs.mode
 #   알림 규칙(재알림 6h·확대 1h·close 강화 120분·재오픈 6h)은 전부 시각 기준이라 주기를 바꿔도 알림량은 그대로.
 #   공개 repo 주의: 60일간 repo 활동(커밋 등)이 없으면 GitHub 가 schedule 을 자동 비활성화한다. 자동 빈 커밋(keepalive)은
 #   GitHub 가 약관 위반으로 막은 전례가 있어 쓰지 않는다 → neon-usage 브리프가 "저장소 마지막 커밋 N일 전" 을 매일 보여 주고
-#   45일 이상이면 ⚠️. 사람이 사소한 커밋 1건을 한다. 꺼졌으면 gh workflow enable (README '60일 규칙').
+#   45일 이상이면 🟡. 사람이 사소한 커밋 1건을 한다. 꺼졌으면 gh workflow enable (README '60일 규칙').
 # 정각(:00)은 GitHub 스케줄 부하 시간대라 지연·드롭이 잦아 x4분(04·14·…·54)으로 비킨다.
 # 공개 repo 라 run 로그·step summary·장애 이슈는 누구나 볼 수 있다 — 로그에 시크릿·응답 본문 외 내부 정보를 찍지 말 것.
 # 수동: Actions → 이 워크플로 → Run workflow → mode(quick | full | test-alert).
-#   test-alert 는 체크 없이 텔레그램 연동 확인 + 알림 서식 샘플 4종(🔴 감지·🟢 복구·⚠️ 감시 실패·🟠 반복)을 "[샘플]" 태그로
+#   test-alert 는 체크 없이 텔레그램 연동 확인 + 알림 서식 샘플 4종(🔴 감지·🟢 복구·🟡 감시 자체 실패·🟡 장애·복구 반복)을 "[샘플]" 태그로
 #   연속 전송한다(fixture 렌더 — 이슈·상태 미변경). 문구 조정은 .github/scripts/telegram-format.sh 한 파일.
 # 상태: 이 repo 의 GitHub Issue — github-actions 봇이 만든 것 + 제목 '[uptime] 장애 감지' + label 'uptime-incident'(감시 전용.
 #   사람이 쓰는 일반 'incident' 라벨과 분리). open = 장애 중. 외부인이 같은 제목·마커로 만든 이슈는 무시(공개 repo).
@@ -64,6 +76,12 @@ on:
         default: quick
         type: choice
         options: [quick, full, test-alert]
+      source:
+        description: "manual(사람 — 기본) | cf(Cloudflare 예약 실행기 전용 — 정기 실행으로 집계됨, 손으로 고르지 말 것)"
+        required: false
+        default: manual
+        type: choice
+        options: [manual, cf]
 
 permissions:
   contents: read
@@ -83,15 +101,29 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      # 예약 실행 주 경로: github(기본) | cloudflare — 스크립트는 읽기만 한다
+      SCHEDULER: ${{ vars.SCHEDULER || 'github' }}
+      # full(DB 경유) 주기(시간) — uptime-mode.sh 가 강제, 템플릿(다음 DB 체크 시각 안내)도 읽기만 한다. 없으면 1(매시)
+      FULL_EVERY_HOURS: ${{ vars.FULL_EVERY_HOURS || '1' }}
     steps:
       - uses: actions/checkout@v5
         with:
           sparse-checkout: .github
           persist-credentials: false
 
+      # SCHEDULER=cloudflare 일 때 schedule run 이 Worker 와 겹치면 건너뛴다(run=0 → 아래 스텝 skipped). 그 외는 항상 run=1.
+      # 조회 실패는 진행(fail-open). 이 스텝이 아예 안 돌면(체크아웃 실패) 출력이 비어 '!= 0' 이라 기존처럼 진행한다.
+      - name: 정기 실행 중복 확인 (Cloudflare 대비책)
+        id: gate
+        env:
+          EVENT: ${{ github.event_name }}
+          SOURCE: ${{ inputs.source }}
+          RUN_ID: ${{ github.run_id }}
+        run: bash .github/scripts/schedule-gate.sh uptime
+
       # 감시 자체 실패·직접 장애 알림의 직전 전송 시각 (알림 폭주 방지용 상태). 캐시 미스여도 계속.
       - name: 감시 상태 복원
-        if: always()
+        if: always() && steps.gate.outputs.run != '0'
         uses: actions/cache/restore@v4
         with:
           path: .selffail
@@ -100,6 +132,7 @@ jobs:
 
       - name: 모드 결정
         id: mode
+        if: steps.gate.outputs.run != '0'
         env:
           EVENT: ${{ github.event_name }}
           SCHED: ${{ github.event.schedule }}
@@ -117,11 +150,14 @@ jobs:
       # ⚠️ 이 스텝 이름도 neon-usage.yml heartbeat 가 조회한다.
       - name: 업타임 체크 + 장애 이슈/텔레그램
         id: check
+        if: steps.gate.outputs.run != '0'
         env:
           MODE: ${{ steps.mode.outputs.mode }}
           SELFFAIL_DIR: .selffail
           TELEGRAM_BOT_TOKEN: ${{ secrets.SIMPARTY_TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.SIMPARTY_TELEGRAM_CHAT_ID }}
+          # 알림 문구용(uptime.sh 로직은 SCHEDULER 를 안 본다) — Worker 대신 도는 대비책 run 이면 실제 주기가 GitHub cron 이라 github 문구
+          SCHEDULER: ${{ steps.gate.outputs.fallback == '1' && 'github' || vars.SCHEDULER || 'github' }}
         run: bash .github/scripts/uptime.sh "$MODE"
 
       # ---- 감시 자체 실패: 텔레그램 6시간에 1건 (영구 고장 시 10분마다 알림 폭주 방지) ----
@@ -132,6 +168,8 @@ jobs:
           MODE: ${{ steps.mode.outputs.mode }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.SIMPARTY_TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.SIMPARTY_TELEGRAM_CHAT_ID }}
+          # '다음 정기 점검(10분 뒤)' 문구용 — 대비책 run 이면 github 문구(위 체크 스텝과 같은 규칙)
+          SCHEDULER: ${{ steps.gate.outputs.fallback == '1' && 'github' || vars.SCHEDULER || 'github' }}
         run: |
           # 1차: 템플릿 lib(fmt_selffail, HTML)를 **서브셸**에서 — lib·템플릿이 깨져(문법 오류·미정의 변수) source·렌더가
           #      죽어도 이 스텝은 살아남는다. lib 는 템플릿이 깨졌으면 스스로 plain 형식으로 대체한다(monitor-lib.sh 머리말).
@@ -158,7 +196,7 @@ jobs:
           else
             echo "::warning::템플릿 경로 실패 — 인라인 plain 으로 전송"
             # lib 없이 인라인 plain. 토큰은 stdin 설정으로만 전달
-            text="⚠️ 감시 자체 실패: uptime (${MODE:-?}) — 이후 6시간 같은 알림 억제
+            text="🟡 감시 자체 실패: uptime (${MODE:-?}) — 이후 6시간 같은 알림 억제
           ${reason}
           ${RUN_URL}"
             http="$(printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TELEGRAM_BOT_TOKEN" \

@@ -3,7 +3,7 @@
 #
 #   quick : DB 를 건드리지 않는 체크만 (liveness, robots.txt)
 #   full  : quick + DB 경유 체크 (readiness, /simparty/categories, SSR 홈) — 시간당 1회·영업시간만 (uptime-mode.sh 가 강제)
-#   test-alert : 체크 없이 텔레그램 연동 확인 + 알림 서식 샘플 4종(🔴·🟢·⚠️·🟠, "[샘플]" 태그 — 이슈·상태 미변경)
+#   test-alert : 체크 없이 텔레그램 연동 확인 + 알림 서식 샘플 4종(🔴·🟢·🟡 감시 실패·🟡 반복, "[샘플]" 태그 — 이슈·상태 미변경)
 #
 # 텔레그램 본문은 전부 telegram-format.sh 의 fmt_* 가 만든다(이 파일은 값만 넘긴다). 문구 조정은 그 파일에서.
 #
@@ -25,8 +25,8 @@
 #   <!-- reopens: ISO,ISO -->  최근 FLAP_WINDOW_SEC(12h) 안의 재오픈 시각 (재발 횟수·플래핑 판정)
 #   <!-- flap-hold: 1 -->      이 재오픈이 12h 안 FLAP_REOPENS(2)번째 이상 = 플래핑 에피소드. close 까지 유지(12h 창이 흘러가도
 #                              열려 있는 동안 강화가 풀리지 않게 — 풀리면 close→reopen 순환이 12h 마다 재시작)
-#   <!-- tg-sent: ISO -->      🔴/🟠 텔레그램을 보낸 시각 (장애 지속 중 REMIND_HOURS(6)시간마다 재알림) — close 후에도 유지
-#   <!-- tg-recovered: ISO --> 🟢 텔레그램을 보낸 시각 (풀리지 않은 🔴/🟠 가 있을 때만 🟢 를 보낸다) — close 후에도 유지
+#   <!-- tg-sent: ISO -->      🔴/🟡 텔레그램을 보낸 시각 (장애 지속 중 REMIND_HOURS(6)시간마다 재알림) — close 후에도 유지
+#   <!-- tg-recovered: ISO --> 🟢 텔레그램을 보낸 시각 (풀리지 않은 🔴/🟡 가 있을 때만 🟢 를 보낸다) — close 후에도 유지
 #   <!-- tg-attempt: ISO -->   텔레그램 전송 실패 시각. 재시도는 1시간에 1번 (텔레그램 고장 시 매 실행 job 실패 방지)
 #   <!-- pass-pending: ISO --> 1차 전부 통과 시각. 다음 실행도 통과해야 close (close 히스테리시스)
 #   <!-- pass-need: full -->   pass-pending 을 만든 실행이 full 이고 DB 경유 체크 실패를 해소한 것이면, close 도 full 실행의
@@ -39,7 +39,7 @@
 #     (직전 텔레그램 후 1시간 이상일 때만. BE(liveness)가 alerted 면 BE 의존 체크(readiness·categories·홈)는 확대 아님)
 #   - close 는 연속 2회 전부 통과 시에만. 12시간 안 재오픈이 FLAP_REOPENS(2)회 이상인 에피소드(flap-hold)는 통과가
 #     FLAP_HOLD_MIN(120)분 이어져야 close → 90분 주기 장애·복구 반복이 close·reopen 이벤트를 무한히 만들지 않는다
-#   - 복구 후 6시간 안 재발은 새 이슈 대신 재오픈. 12시간 안의 첫 재발 = 🔴, 두 번째 = 🟠 1건, 그 이후 억제
+#   - 복구 후 6시간 안 재발은 새 이슈 대신 재오픈. 12시간 안의 첫 재발 = 🔴, 두 번째 = 🟡 1건, 그 이후 억제
 #     (장애가 이어지면 REMIND_HOURS 재알림은 유지). 재오픈·close 사실은 텔레그램을 보낸 경우에만 코멘트, 그 외는 본문 마커
 #   - GitHub 이슈 API 가 죽어 상태 기록이 안 되는데 실제 장애가 있으면 🔴 를 바로 보낸다(간격 1h→3h→6h 로 늘림,
 #     직전 시각·횟수는 SELFFAIL_DIR 에 저장 — 워크플로가 actions/cache 로 보관). 이때 '감시 자체 실패' 알림은 생략.
@@ -396,8 +396,8 @@ if [ -z "$ISSUE" ]; then
   # ---- 신규 장애 ----
   # 라벨 없이는 이슈를 만들지 않는다 — 라벨 없는 이슈는 OWN_FILTER 가 상태로 인정하지 않아 다음 실행마다 새 이슈·🔴 가
   # 반복된다. issues: write 면 생성(--force = 이미 있으면 갱신)이 성공하므로, 실패 = 권한·API 이상 → 감시 실패로 종료.
-  # (STAGE=state + 실패 체크 있음 → on_exit 가 '⚠️ GitHub 이슈 기록 실패' 문구의 🔴 를 1→3→6h 백오프로 직접 전송,
-  #  백오프로 생략되면 워크플로 '감시 자체 실패' 스텝이 ⚠️ 텔레그램(6h 1건). 어느 쪽이든 job 은 실패 → GitHub 실패 메일)
+  # (STAGE=state + 실패 체크 있음 → on_exit 가 'GitHub 이슈 기록 실패' 문구의 🔴 를 1→3→6h 백오프로 직접 전송,
+  #  백오프로 생략되면 워크플로 '감시 자체 실패' 스텝이 🟡 텔레그램(6h 1건). 어느 쪽이든 job 은 실패 → GitHub 실패 메일)
   if ! LABEL_ERR="$(gh label create "$LABEL" --color B60205 --description "업타임 감시 전용: open = 장애 중 (감시가 자동 open/close)" --force 2>&1 >/dev/null)"; then
     echo "::error::label '$LABEL' 생성 실패 — 라벨 없는 장애 이슈는 만들지 않음 (권한 issues: write 확인): ${LABEL_ERR:0:200}"
     note_fail "라벨 '$LABEL' 생성 실패 → 장애 이슈 미생성 (실패 체크: ${FN}). issues: write 권한 확인: ${LABEL_ERR:0:200}"
@@ -464,11 +464,11 @@ if [ -z "$FAILED_SET" ]; then
   # ---- 복구 확정 ----
   MIN="$(minutes_between "$DOWN_SINCE" "$PENDING")"
   OK_AT=""
-  # 🟢 는 풀리지 않은 🔴/🟠 가 있을 때만 (플래핑 억제로 🔴 를 생략했다면 🟢 도 생략)
+  # 🟢 는 풀리지 않은 🔴/🟡 가 있을 때만 (플래핑 억제로 🔴 를 생략했다면 🟢 도 생략)
   if [ "$(ts_gt "$LAST_TG" "$LAST_OK_TG")" = "yes" ]; then
     if alert fmt_recovered results="$RESULTS" now="$NOW_EPOCH" mode="$MODE" issue="$ISSUE_URL" run="$RUN_URL" \
          since="$DOWN_SINCE" pass_at="$PENDING" seen="$(set_union "$SEEN" "$PREV_FAILED")" reopens="$REOPENS_WIN" \
-         flap_hold="$FLAPPY" flap_hold_min="$FLAP_HOLD_MIN" reopen_min="$REOPEN_MINUTES"; then
+         flap_hold="$FLAPPY" flap_hold_min="$FLAP_HOLD_MIN" reopen_min="$REOPEN_MINUTES" remind_h="$REMIND_HOURS"; then
       OK_AT="$TG_AT"; TG_AT=""
     fi
   else
