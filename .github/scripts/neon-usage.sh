@@ -278,7 +278,8 @@ jq -n \
       storage_gb: ($st_gb | r(3)), transfer_gb: ($tx_gb | r(3)), written_gb: ($wr_gb | r(3)),
       projected_cost_usd: (if $cost == null then null else ($cost | r(2)) end),
       budget_usd: $budget,
-      over_budget: ($cost != null and $cost > $budget),
+      # 화면에 보이는 값(r(2))으로 판정 — 브리프 .cost.over 와 같은 기준(반올림 전 값이면 "$3.12 / 예산 $3.12" 가 초과가 된다)
+      over_budget: ($cost != null and ($cost | r(2)) > $budget),
       active_time_seconds: $act, act_src: $actx.src,
       autosuspend: ($as + (if $as.state == "judge" then {ok: ($as.ratio < 0.9), ratio: ($as.ratio | r(3))} else {} end)),
       hourly: (if $hourly == null then null elif ($hourly.nodata // false) then $hourly
