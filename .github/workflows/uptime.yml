@@ -1,5 +1,17 @@
 name: 업타임 감시 (liveness·robots / 정밀 시간당)
-run-name: "uptime · ${{ github.event_name == 'workflow_dispatch' && inputs.mode || (github.event.schedule == '4 2-14 * * *' && 'full' || 'quick') }}"
+run-name: "uptime · ${{ inputs.source == 'cf' && 'cf · ' || '' }}${{ github.event_name == 'workflow_dispatch' && inputs.mode || (github.event.schedule == '4 2-14 * * *' && 'full' || 'quick') }}"
+
+# 예약 실행 경로 (2026-10-30, scheduler/README.md):
+#   주 경로 후보 = Cloudflare Worker(scheduler/)가 정시에 workflow_dispatch(mode=quick|full, source=cf)를 보낸다
+#   → run-name 'uptime · cf · quick|full'. 아래 on.schedule 은 지우지 않고 대비책으로 남긴다.
+#   repo 변수 SCHEDULER(없으면 github) 가 어느 쪽이 주 경로인지 정한다 — '정기 실행 중복 확인' 스텝(schedule-gate.sh):
+#     github(기본·지금) : schedule run 은 오늘과 똑같이 돈다
+#     cloudflare        : schedule run 은 최근 20분 안에 Worker run 이 있으면 건너뛰고(success, 체크 없음), 없으면 대신 돈다
+#   Worker 의 full 도 '모드 결정'(영업시간·주기·재실행·45분 가드)을 그대로 거친다. 사람의 수동 실행은 source=manual(기본).
+#   run-name 이 '· full' 로 끝나는 규칙(uptime-mode.sh·neon-usage heartbeat 가 문자열로 찾음)은 cf run 도 같다.
+#   SCHEDULER 값이 github·cloudflare 가 아니면(오타) github 으로 취급하고 '정기 실행 중복 확인' 로그에 경고를 남긴다.
+# full(DB 경유) 주기 = repo 변수 FULL_EVERY_HOURS(없으면 1 = 매시, 지금과 같음) 한 곳. uptime-mode.sh 가 Worker·schedule·수동
+#   어느 경로든 같은 주기로 강등한다(2 → KST 11·13·…·23시, 3 → 11·14·17·20·23시, 0 → 안 함). 템플릿의 복구 안내도 같은 값을 읽는다.
 
 # 목적: simparty BE(Fly)·FE(Cloudflare Pages) 다운을 텔레그램으로 알린다. 2026-09-19~25 prod 6일 다운을
 #       아무도 몰랐던 사고의 재발 방지. 상태는 GitHub Issue(label 'uptime-incident', open = 장애 중)로 관리.
@@ -64,6 +76,12 @@ on:
         default: quick
         type: choice
         options: [quick, full, test-alert]
+      source:
+        description: "manual(사람 — 기본) | cf(Cloudflare 예약 실행기 전용 — 정기 실행으로 집계됨, 손으로 고르지 말 것)"
+        required: false
+        default: manual
+        type: choice
+        options: [manual, cf]
 
 permissions:
   contents: read
@@ -83,15 +101,29 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      # 예약 실행 주 경로: github(기본) | cloudflare — 스크립트는 읽기만 한다
+      SCHEDULER: ${{ vars.SCHEDULER || 'github' }}
+      # full(DB 경유) 주기(시간) — uptime-mode.sh 가 강제, 템플릿(다음 DB 체크 시각 안내)도 읽기만 한다. 없으면 1(매시)
+      FULL_EVERY_HOURS: ${{ vars.FULL_EVERY_HOURS || '1' }}
     steps:
       - uses: actions/checkout@v5
         with:
           sparse-checkout: .github
           persist-credentials: false
 
+      # SCHEDULER=cloudflare 일 때 schedule run 이 Worker 와 겹치면 건너뛴다(run=0 → 아래 스텝 skipped). 그 외는 항상 run=1.
+      # 조회 실패는 진행(fail-open). 이 스텝이 아예 안 돌면(체크아웃 실패) 출력이 비어 '!= 0' 이라 기존처럼 진행한다.
+      - name: 정기 실행 중복 확인 (Cloudflare 대비책)
+        id: gate
+        env:
+          EVENT: ${{ github.event_name }}
+          SOURCE: ${{ inputs.source }}
+          RUN_ID: ${{ github.run_id }}
+        run: bash .github/scripts/schedule-gate.sh uptime
+
       # 감시 자체 실패·직접 장애 알림의 직전 전송 시각 (알림 폭주 방지용 상태). 캐시 미스여도 계속.
       - name: 감시 상태 복원
-        if: always()
+        if: always() && steps.gate.outputs.run != '0'
         uses: actions/cache/restore@v4
         with:
           path: .selffail
@@ -100,6 +132,7 @@ jobs:
 
       - name: 모드 결정
         id: mode
+        if: steps.gate.outputs.run != '0'
         env:
           EVENT: ${{ github.event_name }}
           SCHED: ${{ github.event.schedule }}
@@ -117,6 +150,7 @@ jobs:
       # ⚠️ 이 스텝 이름도 neon-usage.yml heartbeat 가 조회한다.
       - name: 업타임 체크 + 장애 이슈/텔레그램
         id: check
+        if: steps.gate.outputs.run != '0'
         env:
           MODE: ${{ steps.mode.outputs.mode }}
           SELFFAIL_DIR: .selffail

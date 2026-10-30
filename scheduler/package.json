@@ -1,0 +1,9 @@
+{
+  "name": "simparty-monitor-scheduler",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Workers Cron → GitHub workflow_dispatch (simparty-monitor 정시 실행)",
+  "scripts": {
+    "test": "node --test worker.test.mjs"
+  }
+}
