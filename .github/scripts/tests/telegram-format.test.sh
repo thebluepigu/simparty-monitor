@@ -118,6 +118,13 @@ ISSUE="https://github.com/thebluepigu/simparty-monitor/issues/7"
 for k in detected recovered selffail flap; do
   show "알림 샘플: $k" "$(fmt_sample "$k" now="$NOW" run="$RUN")"
 done
+# 반복 장애(🟡 flap): 이번 장애의 🟢 는 온다 — '재발·복구 알림은 보내지 않아요' 같은 사실과 다른 단정 금지
+FLAP_TXT="$(fmt_sample flap now="$NOW" run="$RUN")"
+assert_eq "flap: '보내지 않아요' 단정 없음" 0 "$(grep -c '재발·복구 알림은 보내지 않아요' <<< "$FLAP_TXT" || true)"
+assert_eq "flap: 120분 통과 후 🟢 복구 알림" 1 "$(grep -c '^- 복구 조건 강화: 모두 통과가 <b>120분</b> 이어져야 🟢 복구 알림 + 이슈 close$' <<< "$FLAP_TXT" || true)"
+assert_eq "flap: 다음 재발은 바로 알리지 않음(6시간에 1번)" 1 "$(grep -c '^- 12시간 안에 또 재발하면 바로 알리지 않아요 — 직전 알림 6시간 뒤부터만 다시 알림 (알리지 않은 재발은 🟢 도 없음)$' <<< "$FLAP_TXT" || true)"
+assert_eq "flap_remind: '멈춘 상태' 없음" 0 "$(grep -c '멈춘 상태' <<< "$(fmt_outage_ongoing kind=flap_remind results="$RUNNER_TEMP/none" now="$NOW" mode=quick since=$((NOW - 7200)) failed=liveness)" || true)"
+assert_eq "recovered(재발 1회): 다음 재발 규칙" 1 "$(grep -c '또 재발하면 🟡 1건, 그다음부터는 바로 알리지 않아요(6시간에 1번)' <<< "$(fmt_recovered now="$NOW" since=$((NOW - 3600)) pass_at=$((NOW - 600)) seen=liveness reopens=1 remind_h=6)" || true)"
 R="$RUNNER_TEMP/res.tsv"
 printf '%s\t%s\t%s\t%s\t%s\n' liveness 1 200 0.21 ok robots 1 200 0.35 ok readiness 0 503 1.02 'status!=UP: {"status":"DOWN","components":{"db":"<DOWN>"}}' \
   categories 0 500 0.88 'HTTP 500' home 1 200 1.7 ok > "$R"
@@ -127,12 +134,13 @@ assert_eq "DB 경유 실패 → 다음 예정 14:04 (N=3, 12:17)" 1 "$(grep -c '
 show "🔴 감지 — DB 경유, DB 포함 점검 꺼짐(FULL_EVERY_HOURS=0)" "$(FULL_EVERY_HOURS=0 fmt_outage_detected kind=new results="$R" now="$NOW" mode=full issue="$ISSUE" run="$RUN")"
 N0_ALERT="$(FULL_EVERY_HOURS=0 fmt_outage_detected kind=new results="$R" now="$NOW" mode=full)"
 assert_eq "N=0 → 꺼져 있음 + 수동 full 도 막힘" 1 "$(grep -c '지금 DB 포함 점검이 꺼져 있어요(FULL_EVERY_HOURS=0 — 수동 mode=full 도 빠른 점검으로 바뀜) → 이대로는 장애가 저절로 닫히지 않아요' <<< "$N0_ALERT" || true)"
-assert_eq "N=0 → 실제 해법 안내" 1 "$(grep -c '^- 해결: repo 변수 FULL_EVERY_HOURS 를 1 이상으로 바꾼 뒤 KST 11~23시에 mode=full 수동 실행, 또는 장애 이슈를 직접 close$' <<< "$N0_ALERT" || true)"
+assert_eq "N=0 → 실제 해법 안내(1 로 — 2·3 이면 수동 full 도 그 주기 시각에만 돈다)" 1 "$(grep -c '^- 해결: repo 변수 FULL_EVERY_HOURS 를 1 로 바꾼 뒤 KST 11~23시에 mode=full 수동 실행(2·3 이면 그 주기 시각에만 돌아요), 또는 장애 이슈를 직접 close$' <<< "$N0_ALERT" || true)"
 assert_eq "N=0 → '수동 실행(mode=full)으로 확인' 같은 안 되는 안내 없음" 0 "$(grep -c '으로 확인$' <<< "$N0_ALERT" || true)"
 show "🔴 지속 — 6h 재알림 (이월 포함)" "$(fmt_outage_ongoing kind=remind results="$R" now="$NOW" mode=quick issue="$ISSUE" run="$RUN" since=$((NOW - 23400)) failed=categories,readiness,home)"
 show "🔴 확대" "$(fmt_outage_expanded results="$R" now="$NOW" mode=full issue="$ISSUE" run="$RUN" since=$((NOW - 4000)) new_fails=categories)"
 show "🔴 재발 (재오픈)" "$(fmt_outage_detected kind=reopen results="$R" now="$NOW" mode=full issue="$ISSUE" run="$RUN")"
 show "🔴 직접 알림 — 이슈 기록 실패" "$(fmt_outage_detected kind=selffail results="$R" now="$NOW" mode=full run="$RUN")"
+assert_eq "직접 알림: 사이트가 먼저 회복되면 🟢 없음" 1 "$(grep -c '^- 그사이 사이트가 먼저 회복되면 따로 🟢 는 오지 않아요(이 경우 장애 이슈도 만들어지지 않음)$' <<< "$(fmt_outage_detected kind=selffail results="$R" now="$NOW" mode=full)" || true)"
 show "🟡 감시 자체 실패 — neon-usage" "$(fmt_selffail workflow=neon-usage now="$NOW" run="$RUN" reason='Neon 프로젝트 상세 조회 실패 (HTTP 401, id=***)')"
 show "[샘플] test-alert 머리" "$(fmt_test now="$NOW" run="$RUN")"
 
@@ -142,8 +150,8 @@ brief() {  # $1 제목, $2 fixture 폴더, 나머지 env 할당
   local st out msg
   st="$(mktemp -d)"
   # 직전 상태: 24시간 전, 기본 브랜치 active_time 이 지금보다 PREV_DELTA 초 적었음 (기본 10368 = 가동률 12%)
-  printf '{"ts":%s,"active_time_seconds":%s,"act_src":"branch","period_start":"2026-10-01T00:00:00Z"}' \
-    $((NOW - 86400)) $((150000 - ${PREV_DELTA:-10368})) > "$st/neon-state.json"
+  printf '{"ts":%s,"active_time_seconds":%s,"act_src":"branch","period_start":"%s"}' \
+    $((NOW - 86400)) $((150000 - ${PREV_DELTA:-10368})) "${PREV_PS:-2026-10-01T00:00:00Z}" > "$st/neon-state.json"
   out="$(env NEON_FIXTURE_DIR="$fx" NEON_PROJECT_ID=proj-fixture NOW_EPOCH="$NOW" STATE_DIR="$st" DRY_RUN=1 \
         RUNNER_TEMP="$RUNNER_TEMP" GITHUB_STEP_SUMMARY= "$@" bash "$SCRIPTS/neon-usage.sh" 2>&1)" || { bad "$title: neon-usage.sh 실패"; echo "$out" | tail -5; return; }
   msg="$(awk '/^----$/{n++; next} n==1' <<< "$out")"
@@ -171,6 +179,19 @@ COMMON=(UPTIME_LAST_SUCCESS="$(ISO $((NOW - 420)))" UPTIME_LAST_FULL="$(ISO $((N
 GH_NOTE='다음 브리프: 내일 09:17 예정(지금은 GitHub 지연으로 오후에 올 수 있음)'
 brief "브리프 🟢 정상" "$FIX" "${COMMON[@]}"
 NORMAL_BRIEF="$LAST_BRIEF"
+assert_eq "켜져 있던 비율 창 = 최근 24시간 (직전 판정 기준점)" 1 "$(grep -c '켜져 있던 비율 <code>12%</code> <i>(최근 24시간, 90% 이상이면 🔴)</i>$' <<< "$LAST_BRIEF" || true)"
+PREV_PS=2026-09-01T00:00:00Z brief "브리프 — 결제 기간 전환 직후 (비율 창 = 기간 시작 이후)" "$FIX" "${COMMON[@]}"
+assert_eq "결제 기간 전환 → '결제 기간 시작 이후'" 1 "$(grep -c '<i>(결제 기간 시작 이후, 90% 이상이면 🔴)</i>$' <<< "$LAST_BRIEF" || true)"
+assert_eq "옛 문구 '직전 브리프 이후' 없음" 0 "$(grep -c '직전 브리프 이후' <<< "$LAST_BRIEF" || true)"
+brief "브리프 🟡 감시 0회·25시간 멈춤 (github)" "$FIX" "${COMMON[@]}" UPTIME_RUNS_24H=0 UPTIME_LAST_SUCCESS="$(ISO $((NOW - 90000)))"
+assert_eq "감시 멈춤 → 첫 줄 🟡 멈췄어요" "🟡" "$(sed -n 1p <<< "$LAST_BRIEF" | cut -d' ' -f1)"
+assert_eq "감시 멈춘 날엔 '감시 고장 아님' 문장 없음" 0 "$(grep -c '감시 고장 아님' <<< "$LAST_BRIEF" || true)"
+brief "브리프 — 예상 비용 = 예산 (반올림 후 같음)" "$FIX" "${COMMON[@]}" NEON_BUDGET_USD=3.12
+assert_eq "\$3.12 / \$3.12 → '넘을 것' 아니라 '거의 닿을 것'" "🟡 <b>예산에 거의 닿을 것 같아요 — 기간 말 예상 \$3.12 / 예산 \$3.12 (100%)</b>" "$(sed -n 1p <<< "$LAST_BRIEF")"
+assert_eq "\$3.12 / \$3.12 → 비용 섹션 문구" 1 "$(grep -c '^🟡 <b>DB 사용량과 비용</b> (Neon): 예산에 거의 닿을 것 같아요$' <<< "$LAST_BRIEF" || true)"
+brief "브리프 — 예상 비용 \$3.12 / 예산 \$3.11 (초과)" "$FIX" "${COMMON[@]}" NEON_BUDGET_USD=3.11
+assert_eq "\$3.12 / \$3.11 → 넘을 것 같아요" "🟡 <b>예산을 넘을 것 같아요 — 기간 말 예상 \$3.12 / 예산 \$3.11</b>" "$(sed -n 1p <<< "$LAST_BRIEF")"
+LAST_BRIEF="$NORMAL_BRIEF"   # 아래 기존 단언들은 정상 브리프를 본다
 assert_eq "🟢 브리프 첫 줄" "🟢 <b>이상 없음 — 기간 말 예상 비용 \$3.12 / 예산 \$15, DB 자동 절전 작동 중</b>" "$(sed -n 1p <<< "$LAST_BRIEF")"
 # M3: 점검 묶음 이름 통일 — quick = 빠른 점검, full = DB 포함 점검(readiness = DB 연결). 옛 이름 'DB 연결 점검'·'DB 점검' 없음
 assert_eq "M3: 빠른 점검 줄" 1 "$(grep -c '^- 빠른 점검(서버 응답 / 화면 응답) 마지막 확인 ' <<< "$LAST_BRIEF" || true)"

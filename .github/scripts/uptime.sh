@@ -468,7 +468,7 @@ if [ -z "$FAILED_SET" ]; then
   if [ "$(ts_gt "$LAST_TG" "$LAST_OK_TG")" = "yes" ]; then
     if alert fmt_recovered results="$RESULTS" now="$NOW_EPOCH" mode="$MODE" issue="$ISSUE_URL" run="$RUN_URL" \
          since="$DOWN_SINCE" pass_at="$PENDING" seen="$(set_union "$SEEN" "$PREV_FAILED")" reopens="$REOPENS_WIN" \
-         flap_hold="$FLAPPY" flap_hold_min="$FLAP_HOLD_MIN" reopen_min="$REOPEN_MINUTES"; then
+         flap_hold="$FLAPPY" flap_hold_min="$FLAP_HOLD_MIN" reopen_min="$REOPEN_MINUTES" remind_h="$REMIND_HOURS"; then
       OK_AT="$TG_AT"; TG_AT=""
     fi
   else

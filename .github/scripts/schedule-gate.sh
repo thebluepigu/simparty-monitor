@@ -44,6 +44,9 @@ SENT_STEP='브리프 전송 표식'
 case "$RUN_ID" in ''|*[!0-9]*) RUN_ID=0 ;; esac
 case "$WINDOW" in ''|*[!0-9]*) WINDOW=1200 ;; esac
 
+# 대비책 표식 — SCHEDULER=cloudflare 인데 이 schedule run 이 Worker 대신 체크한다(Worker 멈춤·조회 실패). uptime.yml 이 이 값을 보고
+#   알림 템플릿에 SCHEDULER=github 를 넘긴다: 실제 주기가 GitHub cron(몇 시간)이라 '약 10분 간격' 이라고 말하면 틀리기 때문
+fallback() { echo "fallback=1" >> "${GITHUB_OUTPUT:-/dev/null}"; }
 out() {  # $1 run=0|1, $2 사유
   echo "kind=$KIND event=$EVENT source=${SOURCE:-} scheduler=$SCHEDULER → run=$1 ($2)"
   if [ "$1" = "0" ]; then echo "::notice::이번 run 은 건너뜀 — $2"; fi
@@ -60,12 +63,12 @@ case "$KIND" in
             '[.[] | select(.databaseId != $me) | select((.displayTitle // "") | contains("· cf ·"))
                   | select((.conclusion // "") | IN("cancelled", "startup_failure", "skipped") | not)
                   | select(($now - (.createdAt | fromdateiso8601)) < $w)] | length' | tr -d '\r')"; then
-      echo "::warning::Worker 실행 조회 실패 — 대비책으로 진행 (fail-open)"; out 1 "조회 실패 → 진행"
+      echo "::warning::Worker 실행 조회 실패 — 대비책으로 진행 (fail-open)"; fallback; out 1 "조회 실패 → 진행"
     fi
-    case "$recent" in ''|*[!0-9]*) echo "::warning::Worker 실행 조회 결과 해석 불가 — 대비책으로 진행"; out 1 "조회 실패 → 진행" ;; esac
+    case "$recent" in ''|*[!0-9]*) echo "::warning::Worker 실행 조회 결과 해석 불가 — 대비책으로 진행"; fallback; out 1 "조회 실패 → 진행" ;; esac
     if [ "$recent" -gt 0 ]; then out 0 "최근 $((WINDOW / 60))분 안에 Cloudflare Worker 가 보낸 uptime run ${recent}건 — Worker 정상"; fi
     echo "::warning::최근 $((WINDOW / 60))분 안에 Cloudflare Worker 의 uptime run 이 없음 — GitHub schedule 이 대비책으로 실행 (Worker·토큰 확인 필요)"
-    out 1 "Worker 실행 없음 → 대비책"
+    fallback; out 1 "Worker 실행 없음 → 대비책"
     ;;
   brief)
     if [ "$EVENT" = "schedule" ]; then

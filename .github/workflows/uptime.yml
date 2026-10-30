@@ -156,6 +156,8 @@ jobs:
           SELFFAIL_DIR: .selffail
           TELEGRAM_BOT_TOKEN: ${{ secrets.SIMPARTY_TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.SIMPARTY_TELEGRAM_CHAT_ID }}
+          # 알림 문구용(uptime.sh 로직은 SCHEDULER 를 안 본다) — Worker 대신 도는 대비책 run 이면 실제 주기가 GitHub cron 이라 github 문구
+          SCHEDULER: ${{ steps.gate.outputs.fallback == '1' && 'github' || vars.SCHEDULER || 'github' }}
         run: bash .github/scripts/uptime.sh "$MODE"
 
       # ---- 감시 자체 실패: 텔레그램 6시간에 1건 (영구 고장 시 10분마다 알림 폭주 방지) ----
@@ -166,6 +168,8 @@ jobs:
           MODE: ${{ steps.mode.outputs.mode }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.SIMPARTY_TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.SIMPARTY_TELEGRAM_CHAT_ID }}
+          # '다음 정기 점검(10분 뒤)' 문구용 — 대비책 run 이면 github 문구(위 체크 스텝과 같은 규칙)
+          SCHEDULER: ${{ steps.gate.outputs.fallback == '1' && 'github' || vars.SCHEDULER || 'github' }}
         run: |
           # 1차: 템플릿 lib(fmt_selffail, HTML)를 **서브셸**에서 — lib·템플릿이 깨져(문법 오류·미정의 변수) source·렌더가
           #      죽어도 이 스텝은 살아남는다. lib 는 템플릿이 깨졌으면 스스로 plain 형식으로 대체한다(monitor-lib.sh 머리말).

@@ -1,6 +1,7 @@
 name: Neon 사용량 일일 브리프
-# Worker(source=cf) run 만 제목 끝에 '· cf' — schedule-gate.sh·heartbeat 가 이 문자열로 정기 실행을 구분한다. 그 외 제목은 예전과 같다.
-run-name: "Neon 사용량 일일 브리프${{ inputs.source == 'cf' && ' · cf' || '' }}"
+# Worker 의 정기 브리프(source=cf · mode=normal) run 만 제목 끝에 '· cf' — schedule-gate.sh 가 이 문자열로 정기 실행을 구분한다.
+#   source=cf 로 손으로 돌린 preview 는 '· cf' 가 붙지 않아 '오늘 정기 브리프 보냄' 으로 세지 않는다. 그 외 제목은 예전과 같다.
+run-name: "Neon 사용량 일일 브리프${{ inputs.source == 'cf' && inputs.mode == 'normal' && ' · cf' || '' }}"
 
 # 목적: 매일 KST 09:17 Neon 프로젝트 'simparty' 의 현재 결제기간 소비량을 텔레그램으로 보고한다.
 #       2026-09 장애(autosuspend 가 한 번도 안 일어나 Free 100 CU-h 를 16.7일에 소진 → prod 6일 다운)의
@@ -159,15 +160,18 @@ jobs:
           since="$(date -u -d '-24 hours' +%s)"
           # 정기 실행 후보(최신순) TSV: id  event(schedule|cf)  createdAt  run결론  full의도(1|0)  24h안(1|0)
           #   취소·기동 실패로 끝난 Worker run 은 체크를 안 했으므로 뺀다(진행 중 run 은 결론이 비어 포함)
+          #   빈 결론은 '-' 로 내보낸다 — 탭은 IFS 공백 문자라 빈 칸(연속 탭)이 합쳐져 뒤 칸이 밀린다(진행 중 run 이 24h 집계에서 빠짐)
           regular="$(jq -r --argjson s "$since" '.[]
               | select(.event == "schedule" or ((.conclusion // "") | IN("cancelled", "startup_failure", "skipped") | not))
               | select(.event == "schedule" or (.event == "workflow_dispatch" and ((.displayTitle // "") | contains("· cf ·"))))
-              | [.databaseId, (if .event == "schedule" then "schedule" else "cf" end), .createdAt, (.conclusion // ""),
+              | [.databaseId, (if .event == "schedule" then "schedule" else "cf" end), .createdAt,
+                 ((.conclusion // "") | if . == "" then "-" else . end),
                  (if ((.displayTitle // "") | endswith("· full")) then 1 else 0 end),
                  (if (.createdAt | fromdateiso8601) >= $s then 1 else 0 end)] | @tsv' <<< "$runs" 2>/dev/null | tr -d '\r' || true)"
           last=""; runs24=0; full24=0; cf24=0; fb24=0; cf_last=""
           while IFS=$'\t' read -r id ev created concl isfull in24; do
             [ -n "$id" ] || continue
+            [ "$concl" != "-" ] || concl=""
             ran=1; ok=0
             if [ "$ev" = "cf" ]; then
               [ -n "$cf_last" ] || cf_last="$created"

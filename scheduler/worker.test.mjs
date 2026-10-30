@@ -32,9 +32,11 @@ test("진입 모듈 worker.js 는 default export 하나만 (workerd 가 named ex
 
 const readToml = async () => (await import("node:fs/promises")).readFile(new URL("./wrangler.toml", import.meta.url), "utf8");
 
-test("wrangler.toml 기본은 DRY_RUN=\"1\" · Workers Logs 켜짐 · FULL_EVERY_HOURS 없음(repo 변수 한 곳)", async () => {
+// DRY_RUN 은 "0"·"1" 둘 다 허용 — 처음 deploy 는 "1"(README 규칙), 전환 5-3 에서 "0" 으로 바꿔 커밋한다(그 커밋이 CI 를 깨지 않게).
+//   lib.js 는 정확히 "0" 일 때만 보내므로, 그 밖의 값(오타)은 이 테스트가 막는다
+test("wrangler.toml DRY_RUN 은 \"0\"|\"1\" · Workers Logs 켜짐 · FULL_EVERY_HOURS 없음(repo 변수 한 곳)", async () => {
   const toml = await readToml();
-  assert.match(toml, /^DRY_RUN\s*=\s*"1"\s*$/m);
+  assert.match(toml, /^DRY_RUN\s*=\s*"[01]"\s*$/m);
   assert.match(toml, /^\[observability\]\s*\nenabled\s*=\s*true\s*$/m);
   assert.doesNotMatch(toml, /^FULL_EVERY_HOURS\s*=/m);
 });

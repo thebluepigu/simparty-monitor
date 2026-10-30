@@ -53,7 +53,7 @@ uptime 은 5~13번만 돌았습니다. 이 폴더의 Cloudflare Worker 는 **정
 | `SCHEDULER` | 없음 = `github` | 예약 실행 주 경로. `cloudflare` 로 두면 Worker 가 주 경로, GitHub schedule 은 대비책. 다른 값(오타)은 `github` 으로 취급하고 로그에 경고 + 브리프용 `SCHEDULER_BAD=1` |
 | `FULL_EVERY_HOURS` | 없음 = `1` | DB 경유(full) 체크 주기(시간). `1` = KST 11~23시 매시(하루 13회, 지금과 같음), `2` = 11·13·…·23시(7회), `3` = 11·14·17·20·23시(5회), `0` = 안 함. 브리프의 "DB 포함 점검 예정 N번" 과 복구 안내의 다음 DB 포함 점검 시각도 이 값으로 계산합니다. 바꾸면 다음 run 부터 바로 적용됩니다(`gh variable set FULL_EVERY_HOURS -b 3 -R thebluepigu/simparty-monitor`) |
 
-`FULL_EVERY_HOURS=0` 으로 두면 DB 체크가 전혀 돌지 않으므로, 하루 반 뒤부터 브리프에 "🟡 DB 포함 점검이 36시간째 없어요" 가 뜨고, DB 를 거치는 점검이 실패한 장애는 **저절로 닫히지 않습니다**(수동 `mode=full` 도 `uptime-mode.sh` 가 quick 으로 바꾸고, DB 경유 실패는 full 이 돌 때까지 이월). 알림은 "FULL_EVERY_HOURS 를 1 이상으로 바꾼 뒤 KST 11~23시에 mode=full 수동 실행, 또는 이슈 직접 close" 로 안내합니다.
+`FULL_EVERY_HOURS=0` 으로 두면 DB 체크가 전혀 돌지 않으므로, 하루 반 뒤부터 브리프에 "🟡 DB 포함 점검이 36시간째 없어요" 가 뜨고, DB 를 거치는 점검이 실패한 장애는 **저절로 닫히지 않습니다**(수동 `mode=full` 도 `uptime-mode.sh` 가 quick 으로 바꾸고, DB 경유 실패는 full 이 돌 때까지 이월). 알림은 "FULL_EVERY_HOURS 를 1 로 바꾼 뒤 KST 11~23시에 mode=full 수동 실행, 또는 이슈 직접 close" 로 안내합니다(2·3 이면 수동 full 도 그 주기 시각(KST 11시부터 N시간 간격)에만 돕니다).
 정말로 끌 때만 씁니다. 주기를 늘리면 DB 체크 실패로 열린 장애는 다음 DB 체크 때 복구가 확정되므로(최대 N시간) 그만큼 늦게 닫힙니다.
 
 ## 대비책 — GitHub `schedule:` 은 그대로 남깁니다
@@ -70,8 +70,7 @@ repo 변수 **`SCHEDULER`** 가 정합니다(없으면 `github`). 판정은 각 
 
 - **"보냄" 의 뜻**: 그 run 의 '브리프 전송 표식' 스텝이 success 이거나(텔레그램 전송 성공 — 템플릿 고장으로 plain 폴백을
   보낸 뒤 job 이 실패로 끝나도 보냄), '브리프' 스텝이 success 입니다. 전송 자체가 실패한 run 은 보낸 것이 아니므로 대비책이
-  다시 보냅니다. 전송 표식은 `neon-usage.sh` 가 전송 성공 시 스텝 출력 `sent=1` 을 남겨야 켜집니다(메시지 개편 작업 쪽 변경).
-  그 변경이 들어가기 전에는 '브리프' 스텝 success 만 보므로, 템플릿 고장 날에는 브리프가 2통 올 수 있습니다(예전 판정과 같음).
+  다시 보냅니다. 전송 표식은 `neon-usage.sh` 가 전송 성공 시 스텝 출력 `sent=1` 로 남깁니다.
 - uptime 은 "같은 종류"를 따지지 않고 Worker uptime run 이 있었는지만 봅니다. Worker 가 살아 있으면 그 시간의 full 여부는
   이미 Worker run 이 모드 결정(주기 포함)을 거쳐 정한 것입니다.
 - 대비책 run 도 `FULL_EVERY_HOURS` 주기를 따릅니다(같은 `uptime-mode.sh`).
@@ -80,15 +79,16 @@ repo 변수 **`SCHEDULER`** 가 정합니다(없으면 `github`). 판정은 각 
   Worker run 의 브리프만은 `SCHEDULER` 와 관계없이 "오늘 이미 보냈으면 건너뜀"을 확인합니다.
 - **Worker 가 멈추면 알 수 있게**: `SCHEDULER=cloudflare` 인데 최근 60분 안에 Worker run 이 없으면 브리프의 감시 집계(hb)가
   `UPTIME_CF_STALE=1`(마지막 Worker run 시각 `UPTIME_CF_LAST`)을 브리프 스크립트에 넘기고 run 로그에 경고를 남깁니다.
-  브리프는 이 값으로 🟡 "예약 실행기 멈춤 — GitHub 대비책으로 동작 중(시각 불규칙), 토큰 만료 확인" 줄을 띄웁니다
-  (메시지 개편 작업 쪽 표시). 대비책 uptime run 도 run 로그에 경고를 남깁니다.
+  브리프는 이 값으로 🟡 "예약 실행기(Cloudflare)가 1시간 넘게 안 돌았어요 — GitHub 대비책으로 도는 중 … (토큰 만료 확인)" 을
+  띄웁니다. 대비책 uptime run 은 run 로그에 경고를 남기고, 그 run 에서 나가는 장애 알림은 "10분 간격" 이 아니라 GitHub 지연
+  문구를 씁니다(`schedule-gate.sh` 의 `fallback=1`).
 
 ## 전환 절차 (할로윈 이후 — 11/1~)
 
 순서가 중요합니다. **워크플로 변경을 main 에 먼저** 올려야 합니다. 워크플로에 `source` 입력이 없으면 GitHub 가
 Worker 의 dispatch 를 422 로 거부합니다.
 
-### 0. 워크플로 변경을 main 에 올리기 (이 브랜치 `feat/cf-scheduler`)
+### 0. 워크플로 변경을 main 에 올리기
 
 CI 가 초록인 것을 확인한 뒤 main 에 머지합니다. `SCHEDULER`·`FULL_EVERY_HOURS` 변수가 없으므로 이 시점의 운영은 오늘과 같습니다.
 
@@ -173,12 +173,16 @@ full 주기를 줄이려면 그 뒤 언제든 repo 변수 `FULL_EVERY_HOURS` 를
 
 1. Worker 를 멈춥니다. 셋 중 하나:
    - `DRY_RUN` 을 `"1"` 로(wrangler 는 toml 수정 후 deploy, 대시보드는 저장)
-   - 크론 트리거 삭제(대시보드 Trigger Events, 또는 `crons = []` 로 deploy)
+   - 크론 트리거 삭제(대시보드 Trigger Events, 또는 `crons = []` 로 deploy — 이 toml 은 **커밋하지 않습니다**: 테스트가
+     크론 2개를 요구해 CI 가 빨개집니다. 되돌린 뒤 다시 켤 때는 커밋된 toml 그대로 deploy)
    - Worker 자체 삭제
 2. **15분 기다립니다**(크론 변경 반영 최대 15분). Workers Logs 에 실제 `dispatch 성공` 이 더 찍히지 않는지,
    `gh run list --event workflow_dispatch` 에 새 `· cf` run 이 없는지 확인합니다.
    이 동안 `SCHEDULER=cloudflare` 가 남아 있으므로 대비책이 자동으로 이어받습니다(uptime 은 20분 안, 브리프는 그날 안 갔으면 대신 보냄).
 3. repo 변수 `SCHEDULER` 를 지웁니다(`gh variable delete SCHEDULER -R thebluepigu/simparty-monitor`). 이제 예전과 똑같습니다.
+   **언제 지우나**: KST 09:17 전, 또는 그날 GitHub schedule 브리프 run 이 끝난 뒤(`gh run list -R thebluepigu/simparty-monitor
+   --workflow neon-usage.yml --event schedule --limit 1` — 보통 KST 13~16시). 그 사이(09:17 Worker 브리프는 이미 갔고 오후
+   schedule 브리프는 아직)에 지우면 schedule 브리프가 조회 없이 보내 **그날만 2통**이 옵니다(감시·DB 영향 없음).
 4. PAT 를 GitHub 에서 Revoke 합니다.
 
 왜 이 순서인가: `SCHEDULER` 가 없으면 GitHub schedule 브리프는 **조회 없이 그냥 보냅니다**(변수가 없을 때 지금과 똑같이

@@ -90,19 +90,24 @@ CHECK='업타임 체크 + 장애 이슈/텔레그램'; MARK='DB 경유(full) 실
 reset
 runs_file uptime.yml "$(run_obj 11 workflow_dispatch 'uptime · cf · quick' $((NOW - 300)) success)"
 assert_eq "uptime: SCHEDULER 없음 → 진행·gh 0회"      "1|0" "$(gate uptime EVENT=schedule)"
+assert_eq "uptime: SCHEDULER 없음 → 대비책 표식 없음"   "" "$(sed -n 's/^fallback=//p' "$T/out")"
 assert_eq "uptime: SCHEDULER=github → 진행·gh 0회"    "1|0" "$(gate uptime EVENT=schedule SCHEDULER=github)"
 assert_eq "uptime: cloudflare + Worker 5분 전 → 건너뜀" "0|1" "$(gate uptime EVENT=schedule SCHEDULER=cloudflare)"
+assert_eq "uptime: 건너뜀 → 대비책 표식 없음"           "" "$(sed -n 's/^fallback=//p' "$T/out")"
 assert_eq "uptime: 대소문자·공백 허용"                 "0|1" "$(gate uptime EVENT=schedule SCHEDULER=' Cloudflare ')"
 assert_eq "uptime: Worker run 은 항상 진행"            "1|0" "$(gate uptime EVENT=workflow_dispatch SOURCE=cf SCHEDULER=cloudflare)"
+assert_eq "uptime: Worker run → 대비책 표식 없음"        "" "$(sed -n 's/^fallback=//p' "$T/out")"
 assert_eq "uptime: 수동 run 은 항상 진행"              "1|0" "$(gate uptime EVENT=workflow_dispatch SOURCE=manual SCHEDULER=cloudflare)"
 runs_file uptime.yml "$(run_obj 11 workflow_dispatch 'uptime · cf · full' $((NOW - 1500)) success)"
 assert_eq "uptime: Worker 마지막 25분 전 → 대비책 실행" "1|1" "$(gate uptime EVENT=schedule SCHEDULER=cloudflare)"
+assert_eq "uptime: 대비책 실행 → fallback=1 (알림이 GitHub 지연 문구)" "1" "$(sed -n 's/^fallback=//p' "$T/out")"
 assert_eq "uptime: 창 30분이면 건너뜀"                 "0|1" "$(gate uptime EVENT=schedule SCHEDULER=cloudflare CF_ALIVE_WINDOW_SEC=1800)"
 runs_file uptime.yml "$(run_obj 12 workflow_dispatch 'uptime · full' $((NOW - 60)) success)" "$(run_obj 13 workflow_dispatch 'uptime · test-alert' $((NOW - 60)) success)"
 assert_eq "uptime: 수동 실행은 Worker 로 안 셈 → 실행"  "1|1" "$(gate uptime EVENT=schedule SCHEDULER=cloudflare)"
 runs_file uptime.yml "$(run_obj 999 workflow_dispatch 'uptime · cf · quick' $((NOW - 60)) success)"
 assert_eq "uptime: 자기 자신은 제외"                    "1|1" "$(gate uptime EVENT=schedule SCHEDULER=cloudflare)"
 assert_eq "uptime: gh 실패 → 진행(fail-open)"          "1|1" "$(GH_FAIL=1 gate uptime EVENT=schedule SCHEDULER=cloudflare)"
+assert_eq "uptime: gh 실패로 진행 → fallback=1"         "1" "$(sed -n 's/^fallback=//p' "$T/out")"
 grep -q '대비책' "$T/gate.log" && ok || bad "uptime: fail-open 경고 로그"
 # L2: 취소·기동 실패·skipped 로 끝난 Worker run 은 살아 있다는 근거가 아니다(진행 중 run 은 셈)
 runs_file uptime.yml "$(run_obj 14 workflow_dispatch 'uptime · cf · quick' $((NOW - 120)) cancelled)" \
@@ -192,6 +197,7 @@ for j in d["jobs"].values():
   reset
   C1="$(iso $((NOW - 3600 + 40)))"; C2="$(iso $((NOW - 7200 + 50)))"
   runs_file uptime.yml \
+    "$(run_obj 106 schedule 'uptime · quick' $((NOW - 60)) '')" \
     "$(run_obj 105 workflow_dispatch 'uptime · test-alert' $((NOW - 600)) success)" \
     "$(run_obj 104 schedule 'uptime · quick' $((NOW - 3600)) success)" \
     "$(run_obj 103 schedule 'uptime · full' $((NOW - 7200)) success)" \
@@ -201,9 +207,9 @@ for j in d["jobs"].values():
   view_file 102 "$MARK=skipped" "$CHECK=success@$C1"
   NEW="$(hb "$T/hb-new.sh")"
   assert_eq "hb(github): 마지막 정기 성공 = schedule 1h 전 (test-alert 제외)" "$(iso $((NOW - 3600)))" "$(key last "$NEW")"
-  assert_eq "hb(github): 24h 정기 실행 2 · full 의도 1"  "2/1" "$(key runs24 "$NEW")/$(key full24 "$NEW")"
+  assert_eq "hb(github): 24h 정기 실행 3(진행 중 1 포함) · full 의도 1"  "3/1" "$(key runs24 "$NEW")/$(key full24 "$NEW")"
   assert_eq "hb(github): DB체크 실제 = run 103"         "$C2/1" "$(key full "$NEW")/$(key fullx24 "$NEW")"
-  assert_eq "hb(github): cf 0 · schedule 2"            "0/2" "$(key cf24 "$NEW")/$(key fb24 "$NEW")"
+  assert_eq "hb(github): cf 0 · schedule 3"            "0/3" "$(key cf24 "$NEW")/$(key fb24 "$NEW")"
   assert_eq "hb(github): 설계 DB체크 기본 13"           "13" "$(key design_full "$NEW")"
   assert_eq "hb(github): Worker 멈춤 판정 해당 없음(빈 값)" "|github|0" "$(key cf_stale "$NEW")|$(key scheduler "$NEW")|$(key scheduler_bad "$NEW")"
   if [ "$OLD_OK" = "1" ]; then
@@ -347,6 +353,9 @@ for j in d["jobs"].values():
     if [ -n "$val" ] && grep -qxF "STEP $val" <<< "$NN"; then ok; else bad "동기: schedule-gate.sh $v='$val' 가 neon-usage.yml 스텝 이름에 없음"; fi
   done
   grep -qF "' · cf'" <<< "$(head -n 1 <<< "$NN")" && ok || bad "동기: neon-usage run-name 에 ' · cf' 없음"
+  # '· cf' 는 Worker 정기 브리프(mode=normal)에만 — source=cf 로 손으로 돌린 preview 가 '오늘 정기 브리프' 로 세지 않게
+  grep -qF "inputs.source == 'cf' && inputs.mode == 'normal' && ' · cf'" <<< "$(head -n 1 <<< "$NN")" && ok || bad "동기: neon-usage run-name 의 '· cf' 가 mode=normal 조건 없이 붙음"
+  assert_eq "동기: uptime.yml 체크·감시 실패 스텝이 대비책이면 github 문구" 2 "$(grep -cF "SCHEDULER: \${{ steps.gate.outputs.fallback == '1' && 'github' || vars.SCHEDULER || 'github' }}" "$ROOT/.github/workflows/uptime.yml")"
   grep -qF "'cf · '" <<< "$(head -n 1 <<< "$UN")" && ok || bad "동기: uptime run-name 에 'cf · ' 없음"
   grep -qxF "STEP $CHECK" <<< "$UN" && grep -qxF "STEP $MARK" <<< "$UN" && ok || bad "동기: uptime.yml 체크·표식 스텝 이름"
 fi

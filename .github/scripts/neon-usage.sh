@@ -259,12 +259,12 @@ jq -n \
         # 결제기간 전환으로 누적값 리셋 → 기간 시작 대비로 판정
         (($now - $s)) as $dt
         | if $dt < $min_dt then {state: "skip", why: "결제기간 전환 후 \($min_dt / 3600 | floor)시간 미만 — 판정 생략"}
-          else {state: "judge", ratio: ($act / $dt), dt: $dt} end
+          else {state: "judge", ratio: ($act / $dt), dt: $dt, basis: "period"} end
      else
         # 창이 하루보다 짧으면 영업시간 가동만 잡혀 정상도 90%+ 로 보인다(수동 실행 오탐) → 최소 DELTA_MIN_SEC(20h)
         (($now - ($prev.ts // $now))) as $dt
         | if $dt < $min_dt then {state: "skip", keep_prev: true, why: "직전 실행과 간격 \($min_dt / 3600 | floor)시간 미만 — 판정 생략"}
-          else {state: "judge", ratio: ((($act - ($prev.active_time_seconds // 0)) | if . < 0 then 0 else . end) / $dt), dt: $dt} end
+          else {state: "judge", ratio: ((($act - ($prev.active_time_seconds // 0)) | if . < 0 then 0 else . end) / $dt), dt: $dt, basis: "prev"} end
      end) as $as
   | ($pr.settings.quota.compute_time_seconds // 0) as $q_cts
   | {
@@ -382,7 +382,8 @@ jq -n --slurpfile r "$WORK/report.json" --argjson now "$NOW" --arg mode "$BRIEF_
   | $p.projected_cost_usd as $cost | $p.budget_usd as $bud
   # 예산 0 이하 = 미설정 — 비교(초과·80%)를 하지 않는다("예산 $0 을 넘을 것 같아요" 방지)
   | ($bud != null and $bud > 0) as $bud_set
-  | (($p.over_budget // false) and $bud_set) as $over
+  # 초과 판정도 화면에 보이는 값(r(2) 반올림된 비용)으로 — 반올림 전 값으로 보면 "$3.12 / 예산 $3.12" 에 "넘을 것" 이 나온다
+  | ($cost != null and $bud_set and $cost > $bud) as $over
   # 판정과 표시에 같은 값(정수 %) — 79.7% 를 "(80%)" 로 보이면서 🟢 로 두지 않게
   | (if $cost != null and $bud_set then ($cost / $bud * 100 | round) else null end) as $cpct
   | ($cpct != null and $bwarn > 0 and ($over | not) and $cpct >= $bwarn) as $near
@@ -413,6 +414,8 @@ jq -n --slurpfile r "$WORK/report.json" --argjson now "$NOW" --arg mode "$BRIEF_
            hour_nodata: ($p.hourly != null and ($p.hourly.nodata // false)),
            full_on: $p.hourly.full_on, hours: $p.hourly.hours,
            delta_judged: ($p.autosuspend.state == "judge"), delta_ratio: $p.autosuspend.ratio, delta_why: $p.autosuspend.why,
+           # 비율의 창 — 브리프 문구(결제 기간 시작 이후 / 최근 N시간)가 실제 창과 맞게
+           delta_basis: $p.autosuspend.basis, delta_hours: (if $p.autosuspend.dt == null then null else ($p.autosuspend.dt / 3600 | floor) end),
            act_src: $p.act_src, period_ratio: $p.period_active_ratio},
       site: $site,
       hb: {uptime_at: $ua, full_at: $fa, uptime_max_h: $up_max, full_max_h: $full_max, site_fresh_h: $site_fresh,
