@@ -25,11 +25,11 @@
 #     모르는 값이면 github 로 동작하고 ⑤ 감시 자체 🟡 (SCHEDULER_BAD=1 — hb 가 같은 판정을 내려 주기도 한다)
 #   UPTIME_CF_STALE (1 = cloudflare 인데 최근 60분 Worker run 없음 → 🟡 "예약 실행기 멈춤") · UPTIME_CF_LAST(ISO)
 #   UPTIME_CF_RUNS_24H · UPTIME_FALLBACK_RUNS_24H — 최근 24h 정기 실행 중 Worker / GitHub 대비책 수(cloudflare 모드에서 표시만)
-# 출력: GITHUB_OUTPUT 에 sent=1 (텔레그램 전송 성공 시 — 템플릿 고장으로 job 이 실패해도 남긴다)
 #   UPTIME_INCIDENT (옵션, JSON — 열린 장애 이슈 {"open":false} | {"open":true,"number","url","failed","since"}, 빈 값 = 확인 불가)
 #   BRIEF_MODE (normal | preview) — preview 는 첫 줄에 "[미리보기] ", 상태(판정 기준점) 저장 안 함
 #   REPO_LAST_COMMIT_EPOCH (옵션, epoch — 이 저장소 마지막 커밋 시각. 워크플로가 git log -1 로 넣어 줌)
 #   REPO_IDLE_WARN_DAYS (기본 45 — 이 일수 이상이면 🟡. 공개 repo 는 60일 무활동 시 schedule 자동 비활성)
+# 출력: GITHUB_OUTPUT 에 sent=1 (텔레그램 전송 성공 시 — 템플릿 고장으로 job 이 실패해도 남긴다)
 #
 # 조회 순서 (Neon API v2, control plane — compute 를 깨우지 않음):
 #   1) GET /projects?search=simparty → name=="simparty" 정확 일치 (못 찾거나 200 이 아니면 /users/me/organizations 의 org 로 재시도)
@@ -342,7 +342,11 @@ case "$SCHED" in
 esac
 [ "${SCHEDULER_BAD:-0}" != "1" ] || SCHED_BAD=1
 # 예약 실행기(Worker) 상태 — hb 가 cloudflare 모드에서만 채운다: UPTIME_CF_STALE 1 = 최근 60분 Worker run 없음(대비책으로 도는 중)
-CF_STALE=0; [ "$SCHED" = cloudflare ] && [ "${UPTIME_CF_STALE:-}" = "1" ] && CF_STALE=1
+#   cloudflare 인데 값이 0·1 이 아니면(hb 의 run 목록 조회 실패) 확인 불가 — 🟡 (확인 불가는 전부 🟡 규칙)
+CF_STALE=0; CF_UNKNOWN=0
+if [ "$SCHED" = cloudflare ]; then
+  case "${UPTIME_CF_STALE:-}" in 1) CF_STALE=1 ;; 0) ;; *) CF_UNKNOWN=1 ;; esac
+fi
 iso_epoch() { [ -n "${1:-}" ] || return 0; date -u -d "$1" +%s 2>/dev/null || true; }
 num_or_empty() { case "${1:-}" in ''|*[!0-9]*) ;; *) printf '%s' "$1" ;; esac; }
 LC_DAYS=""
@@ -363,7 +367,7 @@ jq -n --slurpfile r "$WORK/report.json" --argjson now "$NOW" --arg mode "$BRIEF_
   --argjson dr "${UPTIME_DESIGN_RUNS:-144}" --argjson df "${UPTIME_DESIGN_FULL:-13}" \
   --arg inc "$INCIDENT" --arg lcd "$LC_DAYS" --argjson idle_warn "$REPO_IDLE_WARN_DAYS" \
   --argjson bwarn "$BUDGET_WARN_PCT" --argjson rwarn "$RUNS_WARN_PCT" --arg sched "$SCHED" \
-  --argjson sched_bad "$SCHED_BAD" --argjson cf_stale "$CF_STALE" --arg cf_at "$(iso_epoch "${UPTIME_CF_LAST:-}")" \
+  --argjson sched_bad "$SCHED_BAD" --argjson cf_stale "$CF_STALE" --argjson cf_unknown "$CF_UNKNOWN" --arg cf_at "$(iso_epoch "${UPTIME_CF_LAST:-}")" \
   --arg cf24 "$(num_or_empty "${UPTIME_CF_RUNS_24H:-}")" --arg fb24 "$(num_or_empty "${UPTIME_FALLBACK_RUNS_24H:-}")" '
   def num($s): if $s == "" then null else ($s | tonumber) end;
   # 신호등 단계: ok(🟢) < warn(🟡) < crit(🔴). 섹션별 판정과 첫 줄(가장 나쁜 색)을 여기서 한 번만 정한다 —
@@ -397,7 +401,7 @@ jq -n --slurpfile r "$WORK/report.json" --argjson now "$NOW" --arg mode "$BRIEF_
      cost: (if $over or $near then "warn" else "ok" end),
      as: (if $as_bad then "crit" elif $hour_judged or ($p.autosuspend.state == "judge") then "ok" else "warn" end),
      watch: (if $up_bad or $full_bad or $fa == null or $idle == null or $idle_bad or $runs_low or $full_low
-                or $cf_stale == 1 or $sched_bad == 1 then "warn" else "ok" end)
+                or $cf_stale == 1 or $cf_unknown == 1 or $sched_bad == 1 then "warn" else "ok" end)
     } as $lv
   | {
       now: $now, preview: ($mode == "preview"), project: ($p.project_name // "?"),
@@ -422,9 +426,11 @@ jq -n --slurpfile r "$WORK/report.json" --argjson now "$NOW" --arg mode "$BRIEF_
            runs_warn_pct: $rwarn, runs_low: $runs_low, full_low: $full_low},
       repo: {idle_days: $idle, warn_days: $idle_warn, bad: $idle_bad, unknown: ($idle == null)},
       sched: $sched,
-      # 예약 실행기 — cf_stale: cloudflare 인데 최근 60분 Worker run 없음(🟡) / sched_bad: SCHEDULER 값 오류(🟡, github 으로 동작)
+      # 예약 실행기 — cf_stale: cloudflare 인데 최근 60분 Worker run 없음(🟡) / unknown: 그 판정을 못 함(조회 실패, 🟡)
+      #   sched_bad: SCHEDULER 값 오류(🟡, github 으로 동작)
       #   cf_at: 마지막 Worker run(epoch) · cf24/fb24: 최근 24h 정기 실행 중 Worker / GitHub 대비책 수(표시만)
-      scheduler: {stale: ($cf_stale == 1), bad: ($sched_bad == 1), cf_at: num($cf_at), cf24: num($cf24), fb24: num($fb24)},
+      scheduler: {stale: ($cf_stale == 1), unknown: ($cf_unknown == 1), bad: ($sched_bad == 1),
+                  cf_at: num($cf_at), cf24: num($cf24), fb24: num($fb24)},
       level: ($lv + {overall: ([$lv[]] | worst)})
     }' > "$WORK/brief.json"
 

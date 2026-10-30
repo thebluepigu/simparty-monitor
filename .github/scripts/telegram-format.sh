@@ -122,10 +122,10 @@ fmt_dur() {
   else printf '%d일 %d시간' $((m / 1440)) $(((m % 1440) / 60)); fi
 }
 # full 주기(시간) — repo 변수 FULL_EVERY_HOURS 를 워크플로가 env 로 내려 준다. 해석은 uptime-mode.sh 와 같다
-#   (공백 제거 후 정수가 아니면 1, 0 = DB 포함 점검 안 함)
+#   (공백 제거 후 1~3자리 정수가 아니면 1, 0 = DB 포함 점검 안 함 — 자릿수 상한은 산술 overflow 로 음수가 되는 것 방지)
 _fmt_full_every() {
   local n; n="$(printf '%s' "${FULL_EVERY_HOURS:-}" | tr -d '[:space:]')"
-  if [[ "$n" =~ ^[0-9]+$ ]]; then printf '%d' $((10#$n)); else printf 1; fi
+  if [[ "$n" =~ ^[0-9]{1,3}$ ]]; then printf '%d' $((10#$n)); else printf 1; fi
 }
 # 다음 full(DB 경유) 슬롯 epoch — KST 11:04~23:04 의 04분 중 (KST시 − 11) % FULL_EVERY_HOURS == 0 인 시각
 #   (uptime-mode.sh 의 (UTC시 − 2) % N 과 같은 뜻 — N=1 이면 매시 = uptime.yml full cron '4 2-14 * * *').
@@ -347,7 +347,10 @@ _fmt_outage() {
     if [ -n "$nf" ]; then
       L+=("- DB 를 거치는 점검($(_fmt_labels "$dbf"))은 DB 포함 점검에서만 다시 확인해요 (다음 예정 <b>$(fmt_when "$nf" "$now")</b> KST) → 그때 통과해야 복구 확정")
     else
-      L+=("- DB 를 거치는 점검($(_fmt_labels "$dbf"))은 DB 포함 점검에서만 다시 확인하는데, 지금 DB 포함 점검이 꺼져 있어요(FULL_EVERY_HOURS=0) → 수동 실행(mode=full)으로 확인")
+      # N=0 이면 uptime-mode.sh 가 수동 mode=full 까지 quick 으로 강등하고, uptime.sh 는 DB 경유 실패를 full 이 돌 때까지
+      # 이월하므로 이 장애는 저절로 닫히지 않는다 — 실제로 되는 해법만 안내한다
+      L+=("- DB 를 거치는 점검($(_fmt_labels "$dbf"))은 DB 포함 점검에서만 다시 확인하는데, 지금 DB 포함 점검이 꺼져 있어요(FULL_EVERY_HOURS=0 — 수동 mode=full 도 빠른 점검으로 바뀜) → 이대로는 장애가 저절로 닫히지 않아요")
+      L+=("- 해결: repo 변수 FULL_EVERY_HOURS 를 1 이상으로 바꾼 뒤 KST 11~23시에 mode=full 수동 실행, 또는 장애 이슈를 직접 close")
     fi
   fi
   # GitHub cron 지연 — 위 '다시 알림'·'다음 예정' 시각은 점검이 돌아야 지켜진다(주기를 단정하지 않기 — 2026-10-30 검증 M1)
@@ -498,7 +501,7 @@ fmt_brief() {
   local B_up_at B_full_at B_up_max B_full_max B_up_bad B_full_bad B_full_unknown B_runs B_full24 B_fullx B_dr B_df
   local B_up_unknown B_up_fresh B_site_fresh_h B_rwarn B_runs_low B_full_low
   local B_idle B_idle_warn B_idle_bad B_idle_unknown B_sched
-  local B_cf_stale B_sched_bad B_cf_at B_cf24 B_fb24
+  local B_cf_stale B_cf_unknown B_sched_bad B_cf_at B_cf24 B_fb24
   local B_lv_site B_lv_cost B_lv_as B_lv_watch B_lv_all
   eval "$(jq -r '
     def s: if . == null then "" else tostring end;
@@ -527,7 +530,7 @@ fmt_brief() {
     kv("B_idle"; .repo.idle_days), kv("B_idle_warn"; .repo.warn_days), kv("B_idle_bad"; .repo.bad),
     kv("B_idle_unknown"; .repo.unknown // (.repo.idle_days == null)),
     kv("B_sched"; .sched // "github"),
-    kv("B_cf_stale"; .scheduler.stale // false), kv("B_sched_bad"; .scheduler.bad // false),
+    kv("B_cf_stale"; .scheduler.stale // false), kv("B_cf_unknown"; .scheduler.unknown // false), kv("B_sched_bad"; .scheduler.bad // false),
     kv("B_cf_at"; .scheduler.cf_at), kv("B_cf24"; .scheduler.cf24), kv("B_fb24"; .scheduler.fb24),
     kv("B_lv_site"; .level.site // "ok"), kv("B_lv_cost"; .level.cost // "ok"), kv("B_lv_as"; .level.as // "ok"),
     kv("B_lv_watch"; .level.watch // "ok"), kv("B_lv_all"; .level.overall // "ok")
@@ -567,6 +570,7 @@ fmt_brief() {
   [ -z "$low_what" ] || probs+=("warn|${low_what} 예정의 ${B_rwarn}%보다 적어요 — 예약 실행이 제대로 도는지 확인")
   # 예약 실행기(Cloudflare Worker) — 멈추면 GitHub 대비책이 이어 받아 감시는 계속되지만 시각이 다시 불규칙해진다(조용히 넘어가지 않게)
   [ "$B_cf_stale" != "true" ] || probs+=("warn|예약 실행기(Cloudflare)가 1시간 넘게 안 돌았어요 — GitHub 대비책으로 도는 중이라 점검 시각이 불규칙해요 (토큰 만료 확인)")
+  [ "$B_cf_unknown" != "true" ] || probs+=("warn|예약 실행기(Cloudflare) 상태를 확인할 수 없어요 — 실행 목록 조회 실패")
   [ "$B_sched_bad" != "true" ] || probs+=("warn|repo 변수 SCHEDULER 값이 잘못됐어요 — github 또는 cloudflare 만 돼요 (지금은 GitHub 스케줄로 동작)")
   if [ "$B_idle_bad" = "true" ]; then local left=$((60 - B_idle)); [ "$left" -ge 0 ] || left=0
     probs+=("warn|감시 저장소 ${B_idle}일째 커밋 없음 — ${left}일 뒤 감시가 자동으로 멈춰요 (사소한 커밋 1건 필요)")
@@ -699,7 +703,8 @@ fmt_brief() {
   # 예약 실행기 — cloudflare 모드에서만(github 모드엔 Worker 가 없다). 대비책 수가 늘면 Worker 가 빠뜨린 것
   if [ "$B_sched" = "cloudflare" ]; then
     local cf_line="- 예약 실행기(Cloudflare) 마지막 실행 "
-    if [ -n "$B_cf_at" ]; then cf_line+="<code>$(fmt_ago $((now - B_cf_at)))</code>"; else cf_line+="기록 없음"; fi
+    if [ "$B_cf_unknown" = true ]; then cf_line+="확인 불가 🟡"
+    elif [ -n "$B_cf_at" ]; then cf_line+="<code>$(fmt_ago $((now - B_cf_at)))</code>"; else cf_line+="기록 없음"; fi
     [ "$B_cf_stale" = true ] && cf_line+=" 🟡"
     [ -z "$B_cf24" ] || cf_line+=" / 최근 24시간 예약 실행기 ${B_cf24}번, GitHub 대비책 ${B_fb24:-0}번"
     L+=("$cf_line <i>(1시간 넘게 안 돌면 🟡)</i>")

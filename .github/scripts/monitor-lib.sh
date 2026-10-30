@@ -132,6 +132,7 @@ plain_brief() {
           (if .hb.runs24 == null then "최근 24시간 점검 횟수 확인 불가"
            else "최근 24시간 점검 \(.hb.runs24)번 / 예정 \(.hb.design_runs | n)번\(if .hb.runs_low // false then " 🟡" else "" end)\(if .hb.full24 == null then "" else " (DB 포함 점검 \(.hb.full_exec24 // .hb.full24)번 / 예정 \(.hb.design_full | n)번\(if .hb.full_low // false then " 🟡" else "" end))" end)" end),
           (if (.scheduler.stale // false) then "예약 실행기(Cloudflare) 1시간 넘게 안 돎 🟡 — GitHub 대비책으로 동작 중(토큰 만료 확인)" else empty end),
+          (if (.scheduler.unknown // false) then "예약 실행기(Cloudflare) 상태 확인 불가 🟡" else empty end),
           (if (.scheduler.bad // false) then "repo 변수 SCHEDULER 값 오류 🟡 — GitHub 스케줄로 동작 중" else empty end),
           "감시 저장소 마지막 커밋 \(if .repo.idle_days == null then "확인 불가 🟡" else "\(.repo.idle_days)일 전\(if .repo.bad then " 🟡" else "" end)" end)"
         ] | join("\n")' "$json" 2>/dev/null; then

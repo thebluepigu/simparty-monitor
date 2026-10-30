@@ -286,6 +286,9 @@ for j in d["jobs"].values():
   done
   assert_eq "hb: FULL_EVERY_HOURS 없음 → 13" 13 "$(key design_full "$(hb "$T/hb-new.sh" FULL_EVERY_HOURS=)")"
   assert_eq "hb: 잘못된 값 → 1 로 보고 13" 13 "$(key design_full "$(hb "$T/hb-new.sh" FULL_EVERY_HOURS=abc)")"
+  # 1~3자리만 정수 — 큰 값이 10# 산술에서 음수로 감겨 설계 0 이 되는 것 방지(템플릿·uptime-mode 와 같은 규칙)
+  assert_eq "hb: 20자리 값 → 1 로 보고 13" 13 "$(key design_full "$(hb "$T/hb-new.sh" FULL_EVERY_HOURS=18446744073709551615)")"
+  assert_eq "hb: 4자리 값 → 1 로 보고 13" 13 "$(key design_full "$(hb "$T/hb-new.sh" FULL_EVERY_HOURS=1000)")"
   # (g) gh 전부 실패 → 빈 값(브리프가 '확인 불가'), 스텝은 성공
   reset
   assert_eq "hb: gh 실패 → last·runs24 빈 값" "|" "$(X="$(GH_FAIL=1 hb "$T/hb-new.sh" SCHEDULER=cloudflare)"; printf '%s|%s' "$(key last "$X")" "$(key runs24 "$X")")"
@@ -312,6 +315,8 @@ assert_eq "mode: FULL_EVERY_HOURS=2 → 7회"              "2 4 6 8 10 12 14" "$
 assert_eq "mode: FULL_EVERY_HOURS=3 → KST 11·14·17·20·23시" "2 5 8 11 14" "$(hours_full FULL_EVERY_HOURS=3)"
 assert_eq "mode: FULL_EVERY_HOURS=0 → full 없음"         "" "$(hours_full FULL_EVERY_HOURS=0)"
 assert_eq "mode: FULL_EVERY_HOURS=abc → 1 로 보고 매시"  "full" "$(mode_of "${D}T03:04" FULL_EVERY_HOURS=abc)"
+assert_eq "mode: 20자리 값 → 1 로 보고 매시(음수로 감겨 매 슬롯 full 이 되지 않게)" "2 3 4 5 6 7 8 9 10 11 12 13 14" "$(hours_full FULL_EVERY_HOURS=18446744073709551615)"
+assert_eq "mode: 수동 full 도 FULL_EVERY_HOURS=0 이면 quick (알림 안내 문구의 근거)" "quick" "$(mode_of "${D}T03:04" FULL_EVERY_HOURS=0 EVENT=workflow_dispatch INPUT_MODE=full)"
 grep -q '::warning::FULL_EVERY_HOURS' "$T/mode.log" && ok || bad "mode: 해석 불가 경고 로그"
 assert_eq "mode: schedule full cron 도 같은 주기(3 → UTC 3시 강등)" "quick" "$(mode_of "${D}T03:04" FULL_EVERY_HOURS=3 EVENT=schedule SCHED='4 2-14 * * *')"
 assert_eq "mode: schedule full cron · UTC 5시 · 3 → full"          "full"  "$(mode_of "${D}T05:04" FULL_EVERY_HOURS=3 EVENT=schedule SCHED='4 2-14 * * *')"

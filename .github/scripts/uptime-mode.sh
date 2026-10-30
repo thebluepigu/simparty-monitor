@@ -38,7 +38,8 @@ WINDOW_SEC="${FULL_WINDOW_SEC:-2700}"   # 45분
 EVENT="${EVENT:-}"; SCHED="${SCHED:-}"; RUN_ID="${RUN_ID:-0}"; RUN_ATTEMPT="${RUN_ATTEMPT:-1}"
 NOW="${NOW_EPOCH:-$(date -u +%s)}"
 FEH="$(printf '%s' "${FULL_EVERY_HOURS:-}" | tr -d '[:space:]')"
-if [[ "$FEH" =~ ^[0-9]+$ ]]; then FEH=$((10#$FEH)); else
+# 1~3자리만 정수로 인정 — 큰 값은 10# 산술에서 음수로 감겨 "-eq 0" 검사를 지나 매 슬롯 full 이 된다(템플릿·hb 와 같은 규칙)
+if [[ "$FEH" =~ ^[0-9]{1,3}$ ]]; then FEH=$((10#$FEH)); else
   [ -z "$FEH" ] || echo "::warning::FULL_EVERY_HOURS='${FULL_EVERY_HOURS}' 해석 불가 — 1(매시)로 진행"
   FEH=1
 fi
