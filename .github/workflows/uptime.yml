@@ -158,7 +158,7 @@ jobs:
           else
             echo "::warning::템플릿 경로 실패 — 인라인 plain 으로 전송"
             # lib 없이 인라인 plain. 토큰은 stdin 설정으로만 전달
-            text="⚠️ 감시 자체 실패: uptime (${MODE:-?}) — 이후 6시간 같은 알림 억제
+            text="🟡 감시 자체 실패: uptime (${MODE:-?}) — 이후 6시간 같은 알림 억제
           ${reason}
           ${RUN_URL}"
             http="$(printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TELEGRAM_BOT_TOKEN" \

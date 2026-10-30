@@ -4,36 +4,42 @@
 # 입력 env:
 #   NEON_API_KEY (필수, secret) · NEON_PROJECT_ID (옵션, 없으면 이름 'simparty' 로 검색)
 #   NEON_CU_HOUR_USD (기본 0.106) · NEON_STORAGE_GB_USD (기본 0.35) · NEON_BUDGET_USD (기본 15)
+#   NEON_BUDGET_WARN_PCT (기본 80) — 월말 예상 비용이 예산의 이 % 이상이면 🟡 "예산의 80%를 넘을 것 같아요" (0 = 끔).
+#     예산 초과(> 100%)는 따로 🟡 "예산을 넘을 것 같아요"
 #   STATE_DIR (직전 실행 상태 파일 위치, 기본 ./.monitor-state) — 워크플로가 actions/cache 로 복원/저장
 #   NEON_FIXTURE_DIR (테스트 전용: 지정 시 API 호출 대신 이 폴더의 JSON 사용)
 #   NOW_EPOCH (테스트 전용: 현재 시각 고정)
 #   NEON_MIN_CU (기본 0.25 — autoscaling 최소 CU, 시간별 상시가동 판정 기준)
 #   UPTIME_LAST_SUCCESS (옵션, ISO — uptime.yml 마지막 성공 실행 시각. 워크플로가 gh run list 로 넣어 줌)
 #   UPTIME_LAST_FULL (옵션, ISO — uptime.yml 이 DB 경유(full) 체크를 실제로 마친 마지막 시각)
-#   HB_UPTIME_MAX_H (기본 6) · HB_FULL_MAX_H (기본 36) — 이 시간을 넘겨야 heartbeat ⚠️ (uptime 은 확인 불가여도 ⚠️).
-#     예전 2h/14h 는 GitHub cron 드롭(실측 간격 최대 ~3h) 때문에 매일 ⚠️ 라 경보를 희석했고, 12h 는 밤사이 멈춘 감시를
+#   HB_UPTIME_MAX_H (기본 6) · HB_FULL_MAX_H (기본 36) — 이 시간을 넘겨야 heartbeat 🟡 (uptime 은 확인 불가여도 🟡).
+#     예전 2h/14h 는 GitHub cron 드롭(실측 간격 최대 ~3h) 때문에 매일 경보(옛 ⚠️)라 경보를 희석했고, 12h 는 밤사이 멈춘 감시를
 #     놓쳤다 → uptime 6h (2026-10-13)
-#   SITE_FRESH_H (기본 3) — 브리프 ② 사이트 "✅ 정상" 은 uptime 마지막 성공이 이 시간 이내일 때만
+#   SITE_FRESH_H (기본 3) — 브리프 ② 사이트 "🟢 정상" 은 uptime 마지막 성공이 이 시간 이내일 때만
 #   UPTIME_RUNS_24H · UPTIME_FULL_24H · UPTIME_FULL_EXEC_24H (옵션, 최근 24h 정기 실행 수·full 의도 수·DB체크 실제 수 — 드롭 정도 표시)
 #   UPTIME_DESIGN_RUNS (기본 144) · UPTIME_DESIGN_FULL (기본 13) — 설계상 하루 실행 수
+#   RUNS_WARN_PCT (기본 0 = 끔) — 최근 24h 점검 횟수(전체·DB 점검 각각)가 예정의 이 % 미만이면 🟡.
+#     GitHub 무료 cron 은 지연·드롭이 심해(실측 하루 5~13회 / 예정 144회) 켜면 매일 🟡 → 꺼 두고,
+#     Cloudflare 예약 실행(SCHEDULER=cloudflare)으로 바꾼 뒤 켠다(예: 80)
+#   SCHEDULER (github | cloudflare, 기본 github — 읽기만) — 브리프 끝 "다음 브리프" 안내 문구·드롭 설명 줄을 고른다
 #   UPTIME_INCIDENT (옵션, JSON — 열린 장애 이슈 {"open":false} | {"open":true,"number","url","failed","since"}, 빈 값 = 확인 불가)
 #   BRIEF_MODE (normal | preview) — preview 는 첫 줄에 "[미리보기] ", 상태(판정 기준점) 저장 안 함
 #   REPO_LAST_COMMIT_EPOCH (옵션, epoch — 이 저장소 마지막 커밋 시각. 워크플로가 git log -1 로 넣어 줌)
-#   REPO_IDLE_WARN_DAYS (기본 45 — 이 일수 이상이면 ⚠️. 공개 repo 는 60일 무활동 시 schedule 자동 비활성)
+#   REPO_IDLE_WARN_DAYS (기본 45 — 이 일수 이상이면 🟡. 공개 repo 는 60일 무활동 시 schedule 자동 비활성)
 #
 # 조회 순서 (Neon API v2, control plane — compute 를 깨우지 않음):
 #   1) GET /projects?search=simparty → name=="simparty" 정확 일치 (못 찾거나 200 이 아니면 /users/me/organizations 의 org 로 재시도)
 #   2) GET /projects/{id} → compute_time_seconds, active_time_seconds, data_transfer_bytes,
 #      written_data_bytes, synthetic_storage_size, consumption_period_start/end, settings.quota
 #   3) GET /consumption_history/v2/projects?metrics=compute_unit_seconds (요금 기준 CU초, Launch 이상·org_id 필수)
-#      → 403/실패/빈 응답이면 compute_time_seconds/3600 을 "≈" 근사치로 사용
+#      → 403/실패/빈 응답이면 compute_time_seconds/3600 을 근사치로 사용(브리프에 "근사치" 표기)
 #   4) GET /projects/{id}/branches → 기본 브랜치 active_time_seconds (프로젝트 합계는 dev 브랜치·리플리카까지
 #      더해져 가동률 100% 초과 오탐 → 판정은 기본 브랜치로 한정, 없으면 프로젝트 합계로 대체하고 문구에 명시)
 #   5) 같은 v2 API 를 granularity=hourly 로 최근 24시간 → "그 시간 내내 켜져 있던 시간 수"
 #      (CU초 ≥ 0.9 × NEON_MIN_CU × 3600). 직전값·캐시가 필요 없어 첫 실행에도 판정되고,
 #      Launch 플랜에서 active_time_seconds 가 갱신되지 않아도 동작하는 두 번째 신호.
 #
-# autosuspend 판정: 아래 둘 중 하나라도 ≥ 90% 면 🔴
+# autosuspend(DB 자동 절전) 판정: 아래 둘 중 하나라도 ≥ 90% 면 🔴
 #   (a) 최근 24시간 중 상시가동 시간 비율 (v2 hourly, 프로젝트 합계)
 #   (b) 직전 실행 대비 기본 브랜치 active_time_seconds 증가분 / 경과 시간 — 간격 NEON_DELTA_MIN_SEC(20h) 이상일 때만.
 #       짧은 창(수동 실행)은 영업시간 가동만 잡혀 정상도 90%+ 로 보이므로 생략하고, 기준점도 덮지 않는다.
@@ -49,6 +55,7 @@ PROJECT_NAME="${NEON_PROJECT_NAME:-simparty}"
 CU_RATE="${NEON_CU_HOUR_USD:-0.106}"
 ST_RATE="${NEON_STORAGE_GB_USD:-0.35}"
 BUDGET="${NEON_BUDGET_USD:-15}"
+BUDGET_WARN_PCT="${NEON_BUDGET_WARN_PCT:-80}"   # 월말 예상 비용 ≥ 예산의 이 % → 🟡 (0 = 끔). 숫자 검사는 §5
 MIN_CU="${NEON_MIN_CU:-0.25}"
 DELTA_MIN_SEC="${NEON_DELTA_MIN_SEC:-72000}"   # 직전값 대비 판정 최소 간격 20시간 (짧으면 낮 시간대만 잡혀 오탐)
 STATE_DIR="${STATE_DIR:-.monitor-state}"
@@ -293,25 +300,30 @@ fi
 # ---- 5) 텔레그램 브리프 -------------------------------------------------------
 # 여기서는 값과 판정 플래그만 계산해 brief.json 으로 넘기고, 문구·구조는 telegram-format.sh 의 fmt_brief 가 만든다.
 # heartbeat — 감시 워크플로 자체가 멈춰도(비활성화·YAML 깨짐·스케줄 누락) 여기서 드러나게.
-#   uptime 마지막 성공이 HB_UPTIME_MAX_H(6h) 넘게 전이거나 **확인 불가**(조회 실패·기록 없음)면 첫 줄 ⚠️.
+#   uptime 마지막 성공이 HB_UPTIME_MAX_H(6h) 넘게 전이거나 **확인 불가**(조회 실패·기록 없음)면 첫 줄 🟡.
 #     (10분 주기 + GitHub cron 드롭 실측 최대 ~3h → 6h 면 매일 오탐 없이 "반나절 가까이 감시 공백"을 잡는다.
-#      12h 였을 때는 22시에 멈춘 감시가 09:17 브리프에선 11h 라 ✅ 로 보였다 — 2026-10-13 적대 검증 F3)
-#   DB 경유(full) 마지막 성공이 HB_FULL_MAX_H(36h) 넘게 전이면 ⚠️.
+#      12h 였을 때는 22시에 멈춘 감시가 09:17 브리프에선 11h 라 정상으로 보였다 — 2026-10-13 적대 검증 F3)
+#   DB 경유(full) 마지막 성공이 HB_FULL_MAX_H(36h) 넘게 전이면 🟡.
 #     (full 은 KST 11:04~23:04 에만 돌아 09:17 브리프 시점 정상 간격 ~10h, 여기에 cron 드롭 여유 → 36h = 하루 반 동안 full 0회)
-#   ② 사이트 "✅ 정상" 은 열린 장애 이슈가 없고 **uptime 마지막 성공이 SITE_FRESH_H(3h) 이내**일 때만.
-#     그보다 오래됐거나 모르면 "열린 이슈 없음 · 마지막 확인 N시간 전 ⚠️" — 감시가 멈춰 이슈가 안 열린 것일 수 있다.
+#   ② 사이트 "🟢 정상" 은 열린 장애 이슈가 없고 **uptime 마지막 성공이 SITE_FRESH_H(3h) 이내**일 때만.
+#     그보다 오래됐거나 모르면 "🟡 확인 필요 — 마지막 확인 N시간 전" — 감시가 멈춰 이슈가 안 열린 것일 수 있다.
 # 저장소 마지막 커밋 경과일 — 공개 repo 는 60일 무활동이면 GitHub 가 schedule 워크플로(이 브리프 포함)를 자동으로 끈다.
-#   자동 빈 커밋(keepalive)은 GitHub 가 약관 위반으로 막은 전례가 있어 쓰지 않는다 → 45일부터 ⚠️ 로 사람에게 알린다.
-#   값이 없거나 숫자가 아니면 "확인 불가 ⚠️" (조용히 넘어가지 않게, 단 첫 줄 판정에는 반영 안 함).
+#   자동 빈 커밋(keepalive)은 GitHub 가 약관 위반으로 막은 전례가 있어 쓰지 않는다 → 45일부터 🟡 로 사람에게 알린다.
+#   값이 없거나 숫자가 아니면 "확인 불가" 🟡 (조용히 넘어가지 않게 — 2026-10-30 부터 첫 줄에도 반영).
 HB_UPTIME_MAX_H="${HB_UPTIME_MAX_H:-6}"; HB_FULL_MAX_H="${HB_FULL_MAX_H:-36}"; SITE_FRESH_H="${SITE_FRESH_H:-3}"
 REPO_IDLE_WARN_DAYS="${REPO_IDLE_WARN_DAYS:-45}"
-for v in HB_UPTIME_MAX_H HB_FULL_MAX_H SITE_FRESH_H REPO_IDLE_WARN_DAYS; do
+RUNS_WARN_PCT="${RUNS_WARN_PCT:-0}"
+for v in HB_UPTIME_MAX_H HB_FULL_MAX_H SITE_FRESH_H REPO_IDLE_WARN_DAYS BUDGET_WARN_PCT RUNS_WARN_PCT; do
   case "${!v}" in
     ''|*[!0-9]*)
       echo "::warning::$v='${!v}' 숫자 아님 — 기본값"
-      case "$v" in HB_UPTIME_MAX_H) HB_UPTIME_MAX_H=6 ;; HB_FULL_MAX_H) HB_FULL_MAX_H=36 ;; SITE_FRESH_H) SITE_FRESH_H=3 ;; *) REPO_IDLE_WARN_DAYS=45 ;; esac ;;
+      case "$v" in HB_UPTIME_MAX_H) HB_UPTIME_MAX_H=6 ;; HB_FULL_MAX_H) HB_FULL_MAX_H=36 ;; SITE_FRESH_H) SITE_FRESH_H=3 ;;
+                   BUDGET_WARN_PCT) BUDGET_WARN_PCT=80 ;; RUNS_WARN_PCT) RUNS_WARN_PCT=0 ;; *) REPO_IDLE_WARN_DAYS=45 ;; esac ;;
   esac
 done
+# 예약 실행 주체 — 워크플로가 repo 변수(vars.SCHEDULER)에서 내려 준다. 이 스크립트는 읽기만(문구 선택용)
+SCHED="${SCHEDULER:-github}"
+case "$SCHED" in github|cloudflare) ;; *) echo "::warning::알 수 없는 SCHEDULER '$SCHED' — github 로 간주"; SCHED=github ;; esac
 iso_epoch() { [ -n "${1:-}" ] || return 0; date -u -d "$1" +%s 2>/dev/null || true; }
 num_or_empty() { case "${1:-}" in ''|*[!0-9]*) ;; *) printf '%s' "$1" ;; esac; }
 LC_DAYS=""
@@ -330,34 +342,58 @@ jq -n --slurpfile r "$WORK/report.json" --argjson now "$NOW" --arg mode "$BRIEF_
   --arg runs "$(num_or_empty "${UPTIME_RUNS_24H:-}")" --arg full24 "$(num_or_empty "${UPTIME_FULL_24H:-}")" \
   --arg fullx "$(num_or_empty "${UPTIME_FULL_EXEC_24H:-}")" \
   --argjson dr "${UPTIME_DESIGN_RUNS:-144}" --argjson df "${UPTIME_DESIGN_FULL:-13}" \
-  --arg inc "$INCIDENT" --arg lcd "$LC_DAYS" --argjson idle_warn "$REPO_IDLE_WARN_DAYS" '
+  --arg inc "$INCIDENT" --arg lcd "$LC_DAYS" --argjson idle_warn "$REPO_IDLE_WARN_DAYS" \
+  --argjson bwarn "$BUDGET_WARN_PCT" --argjson rwarn "$RUNS_WARN_PCT" --arg sched "$SCHED" '
   def num($s): if $s == "" then null else ($s | tonumber) end;
+  # 신호등 단계: ok(🟢) < warn(🟡) < crit(🔴). 섹션별 판정과 첫 줄(가장 나쁜 색)을 여기서 한 번만 정한다 —
+  # fmt_brief(HTML)·plain_brief(비상 형식)는 이 값을 표현만 한다(두 곳의 판정이 어긋나지 않게)
+  def worst: if any(.[]; . == "crit") then "crit" elif any(.[]; . == "warn") then "warn" else "ok" end;
   $r[0] as $p
   | ($p.autosuspend.state == "judge" and ($p.autosuspend.ok | not)) as $delta_bad
   | ($p.hourly != null and (($p.hourly.nodata // false) | not)) as $hour_judged
   | ($hour_judged and ($p.hourly.ok | not)) as $hour_bad
   | num($up_at) as $ua | num($full_at) as $fa | num($lcd) as $idle
+  | num($runs) as $r24 | (num($fullx) // num($full24)) as $f24
+  | $p.projected_cost_usd as $cost | $p.budget_usd as $bud
+  | (if $cost != null and $bud > 0 then ($cost / $bud * 100 | round) else null end) as $cpct
+  | ($cost != null and $bud > 0 and $bwarn > 0 and ($p.over_budget | not) and $cost * 100 >= $bwarn * $bud) as $near
+  | ($ua == null or ($now - $ua) > $up_max * 3600) as $up_bad
+  | ($ua != null and ($now - $ua) <= $site_fresh * 3600) as $up_fresh
+  | ($fa != null and ($now - $fa) > $full_max * 3600) as $full_bad
+  | ($rwarn > 0 and $r24 != null and $dr > 0 and $r24 * 100 < $rwarn * $dr) as $runs_low
+  | ($rwarn > 0 and $f24 != null and $df > 0 and $f24 * 100 < $rwarn * $df) as $full_low
+  | ($idle != null and $idle >= $idle_warn) as $idle_bad
+  | (if $inc == "" then null else ($inc | fromjson) end) as $site
+  | ($delta_bad or $hour_bad) as $as_bad
+  | {site: (if ($site.open // false) then "crit" elif $site == null or ($up_fresh | not) then "warn" else "ok" end),
+     cost: (if $p.over_budget or $near then "warn" else "ok" end),
+     as: (if $as_bad then "crit" elif $hour_judged or ($p.autosuspend.state == "judge") then "ok" else "warn" end),
+     watch: (if $up_bad or $full_bad or $fa == null or $idle == null or $idle_bad or $runs_low or $full_low then "warn" else "ok" end)
+    } as $lv
   | {
       now: $now, preview: ($mode == "preview"), project: ($p.project_name // "?"),
       period: {elapsed: $p.elapsed_days, total: $p.total_days, note: $note},
       cu: {approx: ($p.cu_src != "v2"), hours: $p.cu_hours, projected: $p.projected_cu_hours, quota_pct: $p.quota_compute_pct},
-      cost: {projected: $p.projected_cost_usd, budget: $p.budget_usd, over: $p.over_budget},
+      cost: {projected: $cost, budget: $bud, over: $p.over_budget, pct: $cpct, near: $near, warn_pct: $bwarn},
       transfer_gb: $p.transfer_gb, storage_gb: $p.storage_gb,
-      as: {bad: ($delta_bad or $hour_bad), hour_judged: $hour_judged,
+      as: {bad: $as_bad, hour_judged: $hour_judged,
            hour_nodata: ($p.hourly != null and ($p.hourly.nodata // false)),
            full_on: $p.hourly.full_on, hours: $p.hourly.hours,
            delta_judged: ($p.autosuspend.state == "judge"), delta_ratio: $p.autosuspend.ratio, delta_why: $p.autosuspend.why,
            act_src: $p.act_src, period_ratio: $p.period_active_ratio},
-      site: (if $inc == "" then null else ($inc | fromjson) end),
+      site: $site,
       hb: {uptime_at: $ua, full_at: $fa, uptime_max_h: $up_max, full_max_h: $full_max, site_fresh_h: $site_fresh,
-           # 확인 불가(null)도 bad — 감시가 멈췄는지 모르는 상태를 ✅ 로 보이지 않게 (첫 줄 ⚠️)
+           # 확인 불가(null)도 bad — 감시가 멈췄는지 모르는 상태를 🟢 로 보이지 않게 (첫 줄 🟡)
            uptime_unknown: ($ua == null),
-           uptime_bad: ($ua == null or ($now - $ua) > $up_max * 3600),
-           # ② 사이트 ✅ 는 마지막 확인이 최근일 때만
-           uptime_fresh: ($ua != null and ($now - $ua) <= $site_fresh * 3600),
-           full_bad: ($fa != null and ($now - $fa) > $full_max * 3600),
-           runs24: num($runs), full24: num($full24), full_exec24: num($fullx), design_runs: $dr, design_full: $df},
-      repo: {idle_days: $idle, warn_days: $idle_warn, bad: ($idle != null and $idle >= $idle_warn)}
+           uptime_bad: $up_bad,
+           # ② 사이트 🟢 는 마지막 확인이 최근일 때만
+           uptime_fresh: $up_fresh,
+           full_bad: $full_bad, full_unknown: ($fa == null),
+           runs24: $r24, full24: num($full24), full_exec24: num($fullx), design_runs: $dr, design_full: $df,
+           runs_warn_pct: $rwarn, runs_low: $runs_low, full_low: $full_low},
+      repo: {idle_days: $idle, warn_days: $idle_warn, bad: $idle_bad, unknown: ($idle == null)},
+      sched: $sched,
+      level: ($lv + {overall: ([$lv[]] | worst)})
     }' > "$WORK/brief.json"
 
 # 렌더 가드(monitor-lib.sh tg_render): fmt_brief 가 실패(미정의 변수 등)하거나 빈 출력이면 plain_brief(옛 형식)로 대체 +

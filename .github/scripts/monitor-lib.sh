@@ -29,6 +29,7 @@ note_fail() { printf '%s\n' "$*" >> "${RUNNER_TEMP:-/tmp}/monitor_fail_reason"; 
 # =============================================================================
 # 기본(plain) 형식 — 템플릿을 쓸 수 없을 때의 비상 본문. telegram-format.sh 의 fmt_* 와 같은 key=value 인자를 받는다.
 # 옛 형식(2026-10 이전)과 같은 모양: 제목 한 줄 + 체크 표 + 이슈·run URL. parse_mode 없이 보내므로 이스케이프 불필요.
+# 신호등은 템플릿과 같다: 🟢 정상·복구 / 🟡 주의(감시 자체 실패·장애·복구 반복) / 🔴 문제·장애. 한 줄 안 구분은 " / ".
 # =============================================================================
 _pl_args() {
   local -n _pl_map="$1"; shift
@@ -37,9 +38,9 @@ _pl_args() {
     case "$kv" in *=*) _pl_map["${kv%%=*}"]="${kv#*=}" ;; esac
   done
 }
-# 결과 TSV → "✅ name: code (t s) detail" 줄 (uptime.sh 의 옛 TABLE 과 같은 형식)
-_pl_table() { [ -s "${1-}" ] || return 0; awk -F'\t' '{printf "%s %s: %s (%ss) %s\n", ($2=="1"?"✅":"❌"), $1, $3, $4, $5}' "$1"; }
-_pl_note() { printf '%s' "ℹ️ 기본 형식 — 텔레그램 템플릿(telegram-format.sh) 오류로 대체 전송. 실행 로그 확인"; }
+# 결과 TSV → "🟢 name: code (t s) detail" 줄 (통과 🟢 · 실패 🔴)
+_pl_table() { [ -s "${1-}" ] || return 0; awk -F'\t' '{printf "%s %s: %s (%ss) %s\n", ($2=="1"?"🟢":"🔴"), $1, $3, $4, $5}' "$1"; }
+_pl_note() { printf '%s' "[기본 형식] 텔레그램 템플릿(telegram-format.sh) 오류로 대체 전송 — 실행 로그 확인"; }
 _pl_print() { local IFS=$'\n'; printf '%s' "${L[*]}"; }
 
 plain_outage() {
@@ -48,8 +49,8 @@ plain_outage() {
   case "${a[kind]:-new}" in
     new)         head="🔴 simparty 장애 감지" ;;
     reopen)      head="🔴 simparty 장애 재발" ;;
-    selffail)    head="🔴 simparty 장애 감지 — ⚠️ GitHub 이슈 기록 실패로 상태 추적 불가" ;;
-    flap)        head="🟠 simparty 장애·복구 반복" ;;
+    selffail)    head="🔴 simparty 장애 감지 — GitHub 이슈 기록 실패로 상태 추적 불가" ;;
+    flap)        head="🟡 simparty 장애·복구 반복" ;;
     remind)      head="🔴 simparty 장애 지속" ;;
     retry)       head="🔴 simparty 장애 지속 — 직전 알림 전송 실패분 재시도" ;;
     flap_remind) head="🔴 simparty 장애 반복 중" ;;
@@ -57,7 +58,7 @@ plain_outage() {
     *)           head="🔴 simparty 장애" ;;
   esac
   local -a L=("${a[tag]-}${head} ($(kst_now) KST, ${a[mode]:-?})")
-  [ -z "${a[failed]-}" ] || L+=("실패 체크: ${a[failed]}")
+  [ -z "${a[failed]-}" ] || L+=("실패 점검: ${a[failed]}")
   local t; t="$(_pl_table "${a[results]-}")"; [ -z "$t" ] || L+=("$t")
   [ -z "${a[issue]-}" ] || L+=("이슈: ${a[issue]}")
   [ -z "${a[run]-}" ] || L+=("run: ${a[run]}")
@@ -79,7 +80,7 @@ plain_recovered() {
 }
 plain_selffail() {
   local -A a=(); _pl_args a "$@"
-  local -a L=("${a[tag]-}⚠️ 감시 자체 실패: ${a[workflow]:-?}${a[mode]:+ (${a[mode]})} — 이후 ${a[suppress_h]:-6}시간 같은 알림 억제")
+  local -a L=("${a[tag]-}🟡 감시 자체 실패: ${a[workflow]:-?}${a[mode]:+ (${a[mode]})} — 이후 ${a[suppress_h]:-6}시간 같은 알림 억제")
   [ -z "${a[reason]-}" ] || L+=("${a[reason]:0:900}")
   [ -z "${a[run]-}" ] || L+=("${a[run]}")
   L+=("" "$(_pl_note)")
@@ -87,7 +88,7 @@ plain_selffail() {
 }
 plain_test() {
   local -A a=(); _pl_args a "$@"
-  local -a L=("🧪 [샘플] simparty 감시 텔레그램 연동 확인 ($(kst_now) KST) — 실제 장애 아님")
+  local -a L=("[샘플] simparty 감시 텔레그램 연동 확인 ($(kst_now) KST) — 실제 장애 아님")
   [ -z "${a[run]-}" ] || L+=("${a[run]}")
   L+=("" "$(_pl_note)")
   _pl_print
@@ -99,27 +100,31 @@ plain_sample() {
   L+=("" "$(_pl_note)")
   _pl_print
 }
-# Neon 브리프: neon-usage.sh 가 만든 brief.json 에서 옛 형식 7줄
+# 일일 브리프: neon-usage.sh 가 만든 brief.json 에서 옛 형식 7줄. 색은 brief.json .level(neon-usage.sh 판정)을 그대로 쓴다
+# (.level 이 없는 옛 brief.json 이면 옛 플래그로 대략 계산)
 plain_brief() {
   local -A a=(); _pl_args a "$@"
   local json="${a[json]-}" tag="${a[tag]-}"
   if [ -s "$json" ] && jq -r --arg tag "$tag" '
       def n: if . == null then "n/a" else tostring end;
+      def c($l): if $l == "crit" then "🔴" elif $l == "warn" then "🟡" else "🟢" end;
+      def ago($t): if $t == null then "기록 없음 🟡" else "\((((.now - $t) / 360) | floor) / 10)시간 전" end;
       ((.as.bad // false) or (.site.open // false)) as $crit
-      | ((.cost.over // false) or (.hb.uptime_bad // false) or (.hb.full_bad // false) or (.repo.bad // false)
-         or .hb.uptime_at == null or .site == null) as $warn
+      | ((.cost.over // false) or (.cost.near // false) or (.hb.uptime_bad // false) or (.hb.full_bad // false)
+         or (.repo.bad // false) or .hb.uptime_at == null or .site == null) as $warn
+      | (.level.overall // (if $crit then "crit" elif $warn then "warn" else "ok" end)) as $all
       | (if .preview and $tag == "" then "[미리보기] " else $tag end) as $t
-      | [ "\($t)\(if $crit then "🔴" elif $warn then "⚠️" else "✅" end) Neon \(.project // "?") 브리프 \((.now // now) + 32400 | strftime("%m-%d")) (기간 \(.period.elapsed | n)/\(.period.total | n)일)",
-          "CU-h: \(if .cu.approx then "≈" else "" end)\(.cu.hours | n) 누적 → 기간말 예상 \(.cu.projected | n)",
-          "예상 $: \(.cost.projected | n) / 예산 $\(.cost.budget | n)\(if .cost.over then " ⚠️ 초과" else "" end)",
-          "사이트: \(if .site == null then "확인 불가 ⚠️" elif .site.open then "🔴 장애 중 \(.site.failed // "")" elif (.hb.uptime_fresh // false) then "열린 장애 이슈 없음" else "열린 장애 이슈 없음 · 최근 확인 없음 ⚠️" end)",
-          "판정: \(if .as.bad then "🔴 autosuspend 미작동 의심" elif (.as.hour_judged or .as.delta_judged) then "✅ autosuspend 정상" else "⏭ 판정 생략" end)",
-          "감시 heartbeat: uptime \(if .hb.uptime_at == null then "기록 없음 ⚠️" else "\((((.now - .hb.uptime_at) / 360) | floor) / 10)h 전\(if .hb.uptime_bad then " ⚠️" else "" end)" end) · DB체크 \(if .hb.full_at == null then "기록 없음 ⚠️" else "\((((.now - .hb.full_at) / 360) | floor) / 10)h 전\(if .hb.full_bad then " ⚠️" else "" end)" end)",
-          "저장소 마지막 커밋 \(if .repo.idle_days == null then "확인 불가 ⚠️" else "\(.repo.idle_days)일 전\(if .repo.bad then " ⚠️" else "" end)" end)"
+      | [ "\($t)\(c($all)) simparty 브리프 \((.now // now) + 32400 | strftime("%m-%d")) (결제 기간 \(if .period.elapsed == null then "n/a" else (.period.elapsed | floor) + 1 | tostring end)일째 / \(.period.total | n)일)",
+          "DB 사용량(CU-h): 지금까지 \(.cu.hours | n) → 월말 예상 \(.cu.projected | n)\(if .cu.approx then " (근사치)" else "" end)",
+          "월말 예상 비용: $\(.cost.projected | n) / 예산 $\(.cost.budget | n)\(if .cost.over then " 🟡 초과 예상" elif (.cost.near // false) then " 🟡 예산의 \(.cost.warn_pct)% 이상" else "" end)",
+          "사이트: \(if .site == null then "🟡 확인 불가" elif .site.open then "🔴 장애 중 \(.site.failed // "")" elif (.hb.uptime_fresh // false) then "🟢 열린 장애 이슈 없음" else "🟡 열린 장애 이슈 없음 / 최근 확인 없음" end)",
+          "DB 자동 절전: \(if .as.bad then "🔴 미작동 의심" elif (.as.hour_judged or .as.delta_judged) then "🟢 작동 중" else "🟡 판정 생략" end)",
+          "감시: 사이트 점검 \(ago(.hb.uptime_at))\(if .hb.uptime_at != null and .hb.uptime_bad then " 🟡" else "" end) / DB 점검 \(ago(.hb.full_at))\(if .hb.full_bad then " 🟡" else "" end)",
+          "감시 저장소 마지막 커밋 \(if .repo.idle_days == null then "확인 불가 🟡" else "\(.repo.idle_days)일 전\(if .repo.bad then " 🟡" else "" end)" end)"
         ] | join("\n")' "$json" 2>/dev/null; then
     printf '\n%s' "$(_pl_note)"
   else
-    printf '%s⚠️ Neon 브리프 렌더 실패 — 입력(brief.json) 없음·형식 오류. 실행 로그 확인\n\n%s' "$tag" "$(_pl_note)"
+    printf '%s🟡 일일 브리프 렌더 실패 — 입력(brief.json) 없음·형식 오류. 실행 로그 확인\n\n%s' "$tag" "$(_pl_note)"
   fi
 }
 
@@ -183,7 +188,7 @@ tg_render() {
   TG_DEGRADED=1
   pfn="plain_${fn#fmt_}"; TG_MSG=""
   if declare -F "$pfn" >/dev/null; then TG_MSG="$("$pfn" "$@")" || TG_MSG=""; fi
-  [ -n "${TG_MSG//[[:space:]]/}" ] || TG_MSG="⚠️ simparty 감시: 텔레그램 템플릿 렌더 실패 (${fn}) — 실행 로그 확인${RUN_URL:+
+  [ -n "${TG_MSG//[[:space:]]/}" ] || TG_MSG="🟡 simparty 감시: 텔레그램 템플릿 렌더 실패 (${fn}) — 실행 로그 확인${RUN_URL:+
 ${RUN_URL}}"
   TG_MSG_PM=plain
   return 0
