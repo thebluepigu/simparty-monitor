@@ -4,7 +4,7 @@
 # 입력 env:
 #   NEON_API_KEY (필수, secret) · NEON_PROJECT_ID (옵션, 없으면 이름 'simparty' 로 검색)
 #   NEON_CU_HOUR_USD (기본 0.106) · NEON_STORAGE_GB_USD (기본 0.35) · NEON_BUDGET_USD (기본 15)
-#   NEON_BUDGET_WARN_PCT (기본 80) — 월말 예상 비용이 예산의 이 % 이상이면 🟡 "예산의 80%를 넘을 것 같아요" (0 = 끔).
+#   NEON_BUDGET_WARN_PCT (기본 80) — 기간 말 예상 비용이 예산의 이 % 이상이면 🟡 "예산의 80%를 넘을 것 같아요" (0 = 끔).
 #     예산 초과(> 100%)는 따로 🟡 "예산을 넘을 것 같아요"
 #   STATE_DIR (직전 실행 상태 파일 위치, 기본 ./.monitor-state) — 워크플로가 actions/cache 로 복원/저장
 #   NEON_FIXTURE_DIR (테스트 전용: 지정 시 API 호출 대신 이 폴더의 JSON 사용)
@@ -55,7 +55,7 @@ PROJECT_NAME="${NEON_PROJECT_NAME:-simparty}"
 CU_RATE="${NEON_CU_HOUR_USD:-0.106}"
 ST_RATE="${NEON_STORAGE_GB_USD:-0.35}"
 BUDGET="${NEON_BUDGET_USD:-15}"
-BUDGET_WARN_PCT="${NEON_BUDGET_WARN_PCT:-80}"   # 월말 예상 비용 ≥ 예산의 이 % → 🟡 (0 = 끔). 숫자 검사는 §5
+BUDGET_WARN_PCT="${NEON_BUDGET_WARN_PCT:-80}"   # 기간 말 예상 비용 ≥ 예산의 이 % → 🟡 (0 = 끔). 숫자 검사는 §5
 MIN_CU="${NEON_MIN_CU:-0.25}"
 DELTA_MIN_SEC="${NEON_DELTA_MIN_SEC:-72000}"   # 직전값 대비 판정 최소 간격 20시간 (짧으면 낮 시간대만 잡혀 오탐)
 STATE_DIR="${STATE_DIR:-.monitor-state}"
@@ -267,6 +267,8 @@ jq -n \
       project_id: $pr.id, project_name: $pr.name,
       period_start: $pstart, period_end: $pend,
       elapsed_days: ($elapsed | r(1)), total_days: ($total | r(0)),
+      # 브리프의 "결제 기간 N일째" — 반올림 전 경과일로 센다(r(1) 뒤 floor 하면 x.95~x.99일에 하루 많게 셈)
+      period_day: ([($elapsed | floor) + 1, ($total | r(0))] | min),
       cu_src: $cu_src, cu_hours: ($cuh | r(2)),
       projected_cu_hours: (if $proj_cuh == null then null else ($proj_cuh | r(1)) end),
       storage_gb: ($st_gb | r(3)), transfer_gb: ($tx_gb | r(3)), written_gb: ($wr_gb | r(3)),
@@ -306,7 +308,11 @@ fi
 #   DB 경유(full) 마지막 성공이 HB_FULL_MAX_H(36h) 넘게 전이면 🟡.
 #     (full 은 KST 11:04~23:04 에만 돌아 09:17 브리프 시점 정상 간격 ~10h, 여기에 cron 드롭 여유 → 36h = 하루 반 동안 full 0회)
 #   ② 사이트 "🟢 정상" 은 열린 장애 이슈가 없고 **uptime 마지막 성공이 SITE_FRESH_H(3h) 이내**일 때만.
-#     그보다 오래됐거나 모르면 "🟡 확인 필요 — 마지막 확인 N시간 전" — 감시가 멈춰 이슈가 안 열린 것일 수 있다.
+#     🟡 로 올리는 기준은 예약 실행 주체(SCHEDULER)에 따라 다르다:
+#       cloudflare(정시 실행) → SITE_FRESH_H(3h) 초과면 🟡 "확인 필요" — 정시에 도는데 3h 공백이면 실제 이상
+#       github(기본)          → max(SITE_FRESH_H, HB_UPTIME_MAX_H)=6h 초과일 때만 🟡. 3~6h 는 🟢 + "마지막 확인 N시간 전 — GitHub 지연" 글자만
+#         (실측 09-27~10-30: 브리프가 도착하는 13~15시의 약 절반이 3h 초과, 6h 초과는 0회 → 3h 로 🟡 를 켜면 거의 매일 🟡 라
+#          '주의' 색이 소음이 된다. 2026-10-13 2h 기준이 매일 경보라 희석됐던 전례와 같은 이유 — 2026-10-30 검증 H1)
 # 저장소 마지막 커밋 경과일 — 공개 repo 는 60일 무활동이면 GitHub 가 schedule 워크플로(이 브리프 포함)를 자동으로 끈다.
 #   자동 빈 커밋(keepalive)은 GitHub 가 약관 위반으로 막은 전례가 있어 쓰지 않는다 → 45일부터 🟡 로 사람에게 알린다.
 #   값이 없거나 숫자가 아니면 "확인 불가" 🟡 (조용히 넘어가지 않게 — 2026-10-30 부터 첫 줄에도 반영).
@@ -355,26 +361,33 @@ jq -n --slurpfile r "$WORK/report.json" --argjson now "$NOW" --arg mode "$BRIEF_
   | num($up_at) as $ua | num($full_at) as $fa | num($lcd) as $idle
   | num($runs) as $r24 | (num($fullx) // num($full24)) as $f24
   | $p.projected_cost_usd as $cost | $p.budget_usd as $bud
-  | (if $cost != null and $bud > 0 then ($cost / $bud * 100 | round) else null end) as $cpct
-  | ($cost != null and $bud > 0 and $bwarn > 0 and ($p.over_budget | not) and $cost * 100 >= $bwarn * $bud) as $near
+  # 예산 0 이하 = 미설정 — 비교(초과·80%)를 하지 않는다("예산 $0 을 넘을 것 같아요" 방지)
+  | ($bud != null and $bud > 0) as $bud_set
+  | (($p.over_budget // false) and $bud_set) as $over
+  # 판정과 표시에 같은 값(정수 %) — 79.7% 를 "(80%)" 로 보이면서 🟢 로 두지 않게
+  | (if $cost != null and $bud_set then ($cost / $bud * 100 | round) else null end) as $cpct
+  | ($cpct != null and $bwarn > 0 and ($over | not) and $cpct >= $bwarn) as $near
   | ($ua == null or ($now - $ua) > $up_max * 3600) as $up_bad
   | ($ua != null and ($now - $ua) <= $site_fresh * 3600) as $up_fresh
+  # ② 사이트를 🟡 로 올리는 마지막 확인 경과 기준(시간) — 위 주석. github 는 cron 지연이 일상이라 6h(= 감시 멈춤 기준)
+  | (if $sched == "cloudflare" then $site_fresh else ([$site_fresh, $up_max] | max) end) as $site_warn_h
+  | ($ua == null or ($now - $ua) > $site_warn_h * 3600) as $site_stale
   | ($fa != null and ($now - $fa) > $full_max * 3600) as $full_bad
   | ($rwarn > 0 and $r24 != null and $dr > 0 and $r24 * 100 < $rwarn * $dr) as $runs_low
   | ($rwarn > 0 and $f24 != null and $df > 0 and $f24 * 100 < $rwarn * $df) as $full_low
   | ($idle != null and $idle >= $idle_warn) as $idle_bad
   | (if $inc == "" then null else ($inc | fromjson) end) as $site
   | ($delta_bad or $hour_bad) as $as_bad
-  | {site: (if ($site.open // false) then "crit" elif $site == null or ($up_fresh | not) then "warn" else "ok" end),
-     cost: (if $p.over_budget or $near then "warn" else "ok" end),
+  | {site: (if ($site.open // false) then "crit" elif $site == null or $site_stale then "warn" else "ok" end),
+     cost: (if $over or $near then "warn" else "ok" end),
      as: (if $as_bad then "crit" elif $hour_judged or ($p.autosuspend.state == "judge") then "ok" else "warn" end),
      watch: (if $up_bad or $full_bad or $fa == null or $idle == null or $idle_bad or $runs_low or $full_low then "warn" else "ok" end)
     } as $lv
   | {
       now: $now, preview: ($mode == "preview"), project: ($p.project_name // "?"),
-      period: {elapsed: $p.elapsed_days, total: $p.total_days, note: $note},
+      period: {elapsed: $p.elapsed_days, total: $p.total_days, day: $p.period_day, note: $note},
       cu: {approx: ($p.cu_src != "v2"), hours: $p.cu_hours, projected: $p.projected_cu_hours, quota_pct: $p.quota_compute_pct},
-      cost: {projected: $cost, budget: $bud, over: $p.over_budget, pct: $cpct, near: $near, warn_pct: $bwarn},
+      cost: {projected: $cost, budget: $bud, budget_set: $bud_set, over: $over, pct: $cpct, near: $near, warn_pct: $bwarn},
       transfer_gb: $p.transfer_gb, storage_gb: $p.storage_gb,
       as: {bad: $as_bad, hour_judged: $hour_judged,
            hour_nodata: ($p.hourly != null and ($p.hourly.nodata // false)),
@@ -386,8 +399,8 @@ jq -n --slurpfile r "$WORK/report.json" --argjson now "$NOW" --arg mode "$BRIEF_
            # 확인 불가(null)도 bad — 감시가 멈췄는지 모르는 상태를 🟢 로 보이지 않게 (첫 줄 🟡)
            uptime_unknown: ($ua == null),
            uptime_bad: $up_bad,
-           # ② 사이트 🟢 는 마지막 확인이 최근일 때만
-           uptime_fresh: $up_fresh,
+           # ② 사이트 "정상" 은 마지막 확인이 SITE_FRESH_H 안일 때만 / site_stale = 🟡 로 올릴 만큼 오래됨(site_warn_h 초과)
+           uptime_fresh: $up_fresh, site_stale: $site_stale, site_warn_h: $site_warn_h,
            full_bad: $full_bad, full_unknown: ($fa == null),
            runs24: $r24, full24: num($full24), full_exec24: num($fullx), design_runs: $dr, design_full: $df,
            runs_warn_pct: $rwarn, runs_low: $runs_low, full_low: $full_low},

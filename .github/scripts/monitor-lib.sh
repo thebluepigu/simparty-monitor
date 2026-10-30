@@ -100,26 +100,37 @@ plain_sample() {
   L+=("" "$(_pl_note)")
   _pl_print
 }
-# 일일 브리프: neon-usage.sh 가 만든 brief.json 에서 옛 형식 7줄. 색은 brief.json .level(neon-usage.sh 판정)을 그대로 쓴다
-# (.level 이 없는 옛 brief.json 이면 옛 플래그로 대략 계산)
+# 일일 브리프: neon-usage.sh 가 만든 brief.json 에서 기본 형식 8줄. 색은 brief.json .level(neon-usage.sh 판정)을 그대로 쓴다
+# (.level 이 없는 옛 brief.json 이면 옛 플래그로 대략 계산). 말·숫자 규칙은 fmt_brief 와 같게(N일째 상한·"N분 전"·점검 이름)
 plain_brief() {
   local -A a=(); _pl_args a "$@"
   local json="${a[json]-}" tag="${a[tag]-}"
   if [ -s "$json" ] && jq -r --arg tag "$tag" '
       def n: if . == null then "n/a" else tostring end;
       def c($l): if $l == "crit" then "🔴" elif $l == "warn" then "🟡" else "🟢" end;
-      def ago($t): if $t == null then "기록 없음 🟡" else "\((((.now - $t) / 360) | floor) / 10)시간 전" end;
+      def ago($t): if $t == null then "기록 없음 🟡"
+        else ((.now - $t) as $s
+          | if $s < 60 then "방금" elif $s < 3600 then "\($s / 60 | floor)분 전"
+            elif $s < 172800 then "\($s / 3600 | floor)시간 전" else "\($s / 86400 | floor)일 전" end) end;
       ((.as.bad // false) or (.site.open // false)) as $crit
       | ((.cost.over // false) or (.cost.near // false) or (.hb.uptime_bad // false) or (.hb.full_bad // false)
          or (.repo.bad // false) or .hb.uptime_at == null or .site == null) as $warn
       | (.level.overall // (if $crit then "crit" elif $warn then "warn" else "ok" end)) as $all
       | (if .preview and $tag == "" then "[미리보기] " else $tag end) as $t
-      | [ "\($t)\(c($all)) simparty 브리프 \((.now // now) + 32400 | strftime("%m-%d")) (결제 기간 \(if .period.elapsed == null then "n/a" else (.period.elapsed | floor) + 1 | tostring end)일째 / \(.period.total | n)일)",
-          "DB 사용량(CU-h): 지금까지 \(.cu.hours | n) → 월말 예상 \(.cu.projected | n)\(if .cu.approx then " (근사치)" else "" end)",
-          "월말 예상 비용: $\(.cost.projected | n) / 예산 $\(.cost.budget | n)\(if .cost.over then " 🟡 초과 예상" elif (.cost.near // false) then " 🟡 예산의 \(.cost.warn_pct)% 이상" else "" end)",
-          "사이트: \(if .site == null then "🟡 확인 불가" elif .site.open then "🔴 장애 중 \(.site.failed // "")" elif (.hb.uptime_fresh // false) then "🟢 열린 장애 이슈 없음" else "🟡 열린 장애 이슈 없음 / 최근 확인 없음" end)",
+      | (.period.day // (if .period.elapsed == null then null else (.period.elapsed | floor) + 1 end)) as $d0
+      | (if $d0 != null and .period.total != null and $d0 > .period.total then .period.total else $d0 end) as $day
+      | (if (.cost // {}) | has("budget_set") then .cost.budget_set else ((.cost.budget // 0) > 0) end) as $bset
+      | (.level.site // (if .site == null then "warn" elif (.site.open // false) then "crit"
+                         elif (if (.hb // {}) | has("site_stale") then .hb.site_stale else ((.hb.uptime_fresh // false) | not) end) then "warn"
+                         else "ok" end)) as $lsite
+      | [ "\($t)\(c($all)) simparty 일일 브리프 \((.now // now) + 32400 | strftime("%m-%d")) (결제 기간 \($day | n)일째 / \(.period.total | n)일)",
+          "DB 사용량(CU-h): 지금까지 \(.cu.hours | n) → 기간 말 예상 \(.cu.projected | n)\(if .cu.approx then " (근사치)" else "" end)",
+          "기간 말 예상 비용: $\(.cost.projected | n) / \(if $bset then "예산 $\(.cost.budget | n)\(if .cost.pct == null then "" else " (\(.cost.pct)%)" end)" else "예산 미설정" end)\(if .cost.over then " 🟡 초과 예상" elif (.cost.near // false) then " 🟡 예산의 \(.cost.warn_pct)% 이상" else "" end)",
+          "사이트: \(if .site == null then "🟡 확인 불가" elif .site.open then "🔴 장애 중 \(.site.failed // "")" elif $lsite == "warn" then "🟡 열린 장애 이슈 없음 / 최근 확인 없음" else "🟢 열린 장애 이슈 없음" end)",
           "DB 자동 절전: \(if .as.bad then "🔴 미작동 의심" elif (.as.hour_judged or .as.delta_judged) then "🟢 작동 중" else "🟡 판정 생략" end)",
-          "감시: 사이트 점검 \(ago(.hb.uptime_at))\(if .hb.uptime_at != null and .hb.uptime_bad then " 🟡" else "" end) / DB 점검 \(ago(.hb.full_at))\(if .hb.full_bad then " 🟡" else "" end)",
+          "감시: 사이트 점검 \(ago(.hb.uptime_at))\(if .hb.uptime_at != null and .hb.uptime_bad then " 🟡" else "" end) / DB 포함 점검 \(ago(.hb.full_at))\(if .hb.full_bad then " 🟡" else "" end)",
+          (if .hb.runs24 == null then "최근 24시간 점검 횟수 확인 불가"
+           else "최근 24시간 점검 \(.hb.runs24)번 / 예정 \(.hb.design_runs | n)번\(if .hb.runs_low // false then " 🟡" else "" end)\(if .hb.full24 == null then "" else " (DB 포함 점검 \(.hb.full_exec24 // .hb.full24)번 / 예정 \(.hb.design_full | n)번\(if .hb.full_low // false then " 🟡" else "" end))" end)" end),
           "감시 저장소 마지막 커밋 \(if .repo.idle_days == null then "확인 불가 🟡" else "\(.repo.idle_days)일 전\(if .repo.bad then " 🟡" else "" end)" end)"
         ] | join("\n")' "$json" 2>/dev/null; then
     printf '\n%s' "$(_pl_note)"
