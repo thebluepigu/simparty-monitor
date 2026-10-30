@@ -1,20 +1,25 @@
 # simparty-monitor 예약 실행기 — 사용법·운영 절차는 scheduler/README.md
 name = "simparty-monitor-scheduler"
+# 진입 모듈은 default export 만 내보낸다(로직은 lib.js — wrangler 가 하나로 묶어 올린다)
 main = "worker.js"
 compatibility_date = "2026-10-01"
 # HTTP 로 부를 일이 없다(fetch 핸들러 없음) — workers.dev 주소를 만들지 않는다
 workers_dev = false
 
 [triggers]
-# UTC. worker.js 의 UPTIME_CRON·BRIEF_CRON 과 문자열이 같아야 한다(다르면 '알 수 없는 크론' 로그 + 아무것도 안 보냄)
+# UTC. lib.js 의 UPTIME_CRON·BRIEF_CRON 과 문자열이 같아야 한다(다르면 '알 수 없는 크론' 으로 실패 + 아무것도 안 보냄)
 #   uptime 10분마다(매시 04·14·…·54분) / Neon 브리프 UTC 00:17 = KST 09:17
 # Workers Free 크론 트리거 한도 = 계정당 5개 → 여기선 2개 (https://developers.cloudflare.com/workers/platform/limits/)
 crons = ["4,14,24,34,44,54 * * * *", "17 0 * * *"]
 
 [vars]
-# full(DB 경유) 간격 — 1 = KST 11~23시 매시(13회/일), 2 = 7회, 3 = 5회, 0 = Worker 는 full 안 보냄. 바꾸는 곳은 여기 하나
-FULL_EVERY_HOURS = "1"
-# "1" 이면 GitHub 를 부르지 않고 로그만 (처음 켤 때 확인용)
-DRY_RUN = "0"
+# ⚠️ wrangler deploy 는 대시보드에서 바꾼 변수를 이 파일 값으로 덮어쓴다 → wrangler 로 배포하면 값은 여기서만 바꾼다.
+# 실제 전송은 정확히 "0" 일 때만. 기본 "1" = 보낼 내용만 로그(시크릿을 넣어도 바로 전송이 시작되지 않게 — README 5단계)
+DRY_RUN = "1"
+# full(DB 체크) 주기는 여기 없다 — repo 변수 FULL_EVERY_HOURS 한 곳(README '설정값')
 
-# 시크릿은 여기 쓰지 않는다:  npx wrangler secret put GITHUB_TOKEN
+# Workers Logs — console.log/error 를 대시보드 Logs 에 남긴다(Free 포함). DRY_RUN 확인·토큰 만료(401) 진단용
+[observability]
+enabled = true
+
+# 시크릿은 여기 쓰지 않는다:  npx wrangler@4 secret put GITHUB_TOKEN

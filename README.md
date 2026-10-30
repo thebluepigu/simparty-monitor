@@ -73,7 +73,9 @@ Settings → Secrets and variables → Actions → **Secrets** 에 등록합니�
 `NEON_CU_HOUR_USD`(0.106), `NEON_STORAGE_GB_USD`(0.35), `NEON_MIN_CU`(0.25), `REPO_IDLE_WARN_DAYS`(45),
 `HB_UPTIME_MAX_H`(6), `HB_FULL_MAX_H`(36), `SITE_FRESH_H`(3),
 `SCHEDULER`(`github` | `cloudflare`, 기본 github — 예약 실행 주 경로, `scheduler/README.md`),
-`UPTIME_DESIGN_FULL`(13 — 브리프의 "DB체크 설계 N회". Worker 브리프는 Worker 의 `FULL_EVERY_HOURS` 로 계산하므로 보통 비워 둠).
+`FULL_EVERY_HOURS`(1 — DB 경유(full) 체크 주기(시간). 1 = KST 11~23시 매시 13회 = 지금, 2 = 7회, 3 = 11·14·17·20·23시 5회,
+0 = 안 함. `uptime-mode.sh` 가 Worker·GitHub schedule·수동 어느 경로든 같은 주기로 강제하고, 브리프의 "DB체크 설계 N회" 와
+복구 안내의 다음 DB 체크 시각도 이 값을 씁니다).
 Variables 값은 run 로그에 보이므로 비밀이 아닌 값만 둡니다.
 
 ## 왜 공개 repo 인가
@@ -166,11 +168,11 @@ gh workflow run neon-usage.yml -R thebluepigu/simparty-monitor -f mode=normal   
   scripts/monitor-lib.sh     공용 함수 (텔레그램 전송 — HTML·plain 재전송, 템플릿 오류 시 plain 대체, KST 시각)
   scripts/telegram-format.sh 텔레그램 메시지 템플릿 (모든 본문 — 조정은 여기만)
   scripts/tests/             템플릿 단위·고장 주입 테스트, 렌더 미리보기, 대비책·heartbeat 테스트, ci-check.sh + Neon fixture
-scheduler/                   Cloudflare Workers Cron 예약 실행기 (worker.js · wrangler.toml · 운영 절차 README)
+scheduler/                   Cloudflare Workers Cron 예약 실행기 (worker.js 진입 · lib.js 로직 · wrangler.toml · 운영 절차 README)
 ```
 
 ⚠️ cron 문자열은 여러 곳이 같아야 합니다. full `4 2-14 * * *` 은 `uptime.yml` 의 `on.schedule`·`run-name`·
 `uptime-mode.sh` 의 `FULL_CRON` 세 곳, quick 두 줄은 `on.schedule` 과 `QUICK_CRONS` 가 같아야 합니다.
-Cloudflare 쪽은 `scheduler/wrangler.toml` 의 `crons` 와 `scheduler/worker.js` 의 `UPTIME_CRON`·`BRIEF_CRON` 이 같아야 합니다(테스트가 확인).
+Cloudflare 쪽은 `scheduler/wrangler.toml` 의 `crons` 와 `scheduler/lib.js` 의 `UPTIME_CRON`·`BRIEF_CRON` 이 같아야 합니다(테스트가 확인).
 
 > 첫 스케줄 실행 확인용 push: 2026-09-27 22:15 KST (schedule 은 기본 브랜치 push 이후 활성화되는 경우가 있음)

@@ -6,7 +6,7 @@ name: CI (스크립트 문법·템플릿 테스트)
 #   문구만 바꾸는 미세 조정도 이 CI 를 통과시킨 뒤 main 에 올린다 — 작업 브랜치 push 에서 먼저 보인다.
 # 검사(.github/scripts/tests/ci-check.sh — 로컬에서도 같은 명령):
 #   bash -n(모든 *.sh) · 워크플로 YAML 파싱 + run: 블록 bash -n · tests/telegram-format.test.sh(렌더·이스케이프·재전송·고장 주입)
-#   · tests/schedule-gate.test.sh(Cloudflare 대비책·heartbeat, 가짜 gh) · scheduler/worker.js node --check + worker.test.mjs(가짜 fetch)
+#   · tests/schedule-gate.test.sh(Cloudflare 대비책·heartbeat·uptime-mode 주기, 가짜 gh) · scheduler/ node --check + worker.test.mjs(가짜 fetch)
 # 네트워크·시크릿을 쓰지 않는다(가짜 curl/gh fixture). 공개 repo 라 fork PR 에서도 돌지만 시크릿이 없어 안전하다.
 
 on:
@@ -29,8 +29,6 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
-          # schedule-gate.test.sh 가 origin/main 의 옛 heartbeat 스텝과 출력을 비교한다(없으면 그 비교만 SKIP)
-          fetch-depth: 0
 
       - name: 도구 확인 (bash·jq·python yaml·node)
         run: |

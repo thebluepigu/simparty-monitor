@@ -2,13 +2,18 @@
 # uptime.yml '모드 결정' 스텝 본체. 출력: GITHUB_OUTPUT 에 mode=quick|full|test-alert
 #
 # 입력 env: EVENT(github.event_name) SCHED(github.event.schedule) INPUT_MODE RUN_ID RUN_ATTEMPT GH_REPO GH_TOKEN
+#           FULL_EVERY_HOURS(vars.FULL_EVERY_HOURS — 없으면 1), 선택: NOW_EPOCH(테스트용 현재 시각)
 #
-# Cloudflare 예약 실행기(scheduler/worker.js)의 run 은 workflow_dispatch(mode=quick|full, source=cf)로 들어와 수동 실행과 같은
+# Cloudflare 예약 실행기(scheduler/)의 run 은 workflow_dispatch(mode=quick|full, source=cf)로 들어와 수동 실행과 같은
 # 경로(INPUT_MODE)를 탄다 — Worker 가 보낸 full 도 아래 1)~3) 가드를 그대로 거친다(run-name 'uptime · cf · full' 도 '· full' 로 끝남).
 # schedule run 을 건너뛸지(Worker 가 살아 있으면)는 이 스크립트가 아니라 앞 스텝 schedule-gate.sh 가 정한다.
 #
 # 🔴 DB 경유(full) 는 "영업시간(UTC 02~14시)·시간당 1회" 를 cron 에만 맡기지 않고 여기서 강제한다. fail-safe = quick.
 #   1) UTC 02~14시 밖이면(스케줄 지연 포함) quick
+#   1b) full 주기: repo 변수 FULL_EVERY_HOURS(=N, 기본 1)가 정한 시간이 아니면 quick — (UTC시 − 2) % N != 0.
+#       N=1 → KST 11~23시 매시(13회, 지금과 같음) · 2 → 11·13·…·23시(7회) · 3 → 11·14·17·20·23시(5회) · 0 → full 안 함.
+#       Worker·GitHub schedule 대비책·수동 full 이 전부 이 스크립트를 거치므로 주기를 정하는 곳은 이 변수 하나다
+#       (브리프의 '설계 N회'·복구 안내의 다음 DB 체크 시각도 같은 변수). 정수 아닌 값은 1(지금과 같음)로 본다.
 #   2) 재실행(run_attempt>1)이면 quick — 1차 시도가 이미 DB 를 건드렸다
 #   3) 스케줄·수동 구분 없이, 최근 45분 안에 **실제로 DB 체크를 실행한** 다른 run 이 있으면 quick
 #      - 창을 55→45분으로 줄인 이유: 스케줄 지연 편차(예: 직전 full 13분 지연·이번 2분 지연 = 간격 49분)로 정상 full 이
@@ -31,7 +36,13 @@ FULL_MARKER_STEP='DB 경유(full) 실행 표식'
 WINDOW_SEC="${FULL_WINDOW_SEC:-2700}"   # 45분
 
 EVENT="${EVENT:-}"; SCHED="${SCHED:-}"; RUN_ID="${RUN_ID:-0}"; RUN_ATTEMPT="${RUN_ATTEMPT:-1}"
-out() { echo "event=$EVENT schedule='$SCHED' attempt=$RUN_ATTEMPT → mode=$1"; echo "mode=$1" >> "${GITHUB_OUTPUT:-/dev/null}"; exit 0; }
+NOW="${NOW_EPOCH:-$(date -u +%s)}"
+FEH="$(printf '%s' "${FULL_EVERY_HOURS:-}" | tr -d '[:space:]')"
+if [[ "$FEH" =~ ^[0-9]+$ ]]; then FEH=$((10#$FEH)); else
+  [ -z "$FEH" ] || echo "::warning::FULL_EVERY_HOURS='${FULL_EVERY_HOURS}' 해석 불가 — 1(매시)로 진행"
+  FEH=1
+fi
+out() { echo "event=$EVENT schedule='$SCHED' attempt=$RUN_ATTEMPT full_every_hours=$FEH → mode=$1"; echo "mode=$1" >> "${GITHUB_OUTPUT:-/dev/null}"; exit 0; }
 
 case "$EVENT" in
   schedule)
@@ -49,19 +60,23 @@ esac
 
 [ "$MODE" = "full" ] || out "$MODE"
 
-H=$((10#$(date -u +%H)))
+H=$((10#$(date -u -d "@$NOW" +%H)))
 if [ "$H" -lt 2 ] || [ "$H" -gt 14 ]; then
   echo "::notice::UTC ${H}시 = 영업시간(UTC 02~14시) 밖 → full 을 quick 으로 강등 (Neon 보호)"; out quick
+fi
+if [ "$FEH" -eq 0 ] || [ $(((H - 2) % FEH)) -ne 0 ]; then
+  echo "::notice::FULL_EVERY_HOURS=${FEH} — UTC ${H}시(KST $((H + 9))시)는 DB 체크 시간이 아님 → quick 으로 강등"; out quick
 fi
 if [ "$RUN_ATTEMPT" != "1" ]; then
   echo "::notice::재실행(attempt ${RUN_ATTEMPT}) → 1차 시도가 이미 DB 를 건드렸으므로 quick 으로 강등"; out quick
 fi
 
 # 최근 45분 안의 full "의도" run 후보 (자기 자신 제외). 한 줄에 "<id> <attempt>"
-if ! CANDS="$(gh run list --workflow uptime.yml --limit 20 --json databaseId,displayTitle,createdAt,attempt 2>/dev/null \
-    | jq -r --argjson me "$RUN_ID" --argjson w "$WINDOW_SEC" \
+# --limit 40: Worker(10분)·GitHub schedule(정시에 온다면 10분)·수동이 겹쳐도 45분 안 run 은 약 10건 — 넉넉히
+if ! CANDS="$(gh run list --workflow uptime.yml --limit 40 --json databaseId,displayTitle,createdAt,attempt 2>/dev/null \
+    | jq -r --argjson me "$RUN_ID" --argjson w "$WINDOW_SEC" --argjson now "$NOW" \
         '.[] | select(.databaseId != $me) | select((.displayTitle // "") | endswith("· full"))
-         | select((now - (.createdAt | fromdateiso8601)) < $w) | "\(.databaseId) \(.attempt // 1)"')"; then
+         | select(($now - (.createdAt | fromdateiso8601)) < $w) | "\(.databaseId) \(.attempt // 1)"' | tr -d '\r')"; then
   echo "::notice::최근 실행 조회 실패 → 안전하게 quick 으로 강등"; out quick
 fi
 while read -r id att; do

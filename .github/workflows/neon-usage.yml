@@ -60,18 +60,17 @@ on:
         default: manual
         type: choice
         options: [manual, cf]
-      full_every_hours:
-        description: "(Worker 가 채움) Worker 의 FULL_EVERY_HOURS — 브리프의 'DB체크 설계 N회' 계산용. 비우면 vars.UPTIME_DESIGN_FULL 또는 13"
-        required: false
-        default: ''
-        type: string
 
 # 예약 실행 경로 (2026-10-30, scheduler/README.md): Cloudflare Worker 가 UTC 00:17 정시에 mode=normal·source=cf 로 보낸다.
 #   on.schedule 은 대비책으로 남긴다. repo 변수 SCHEDULER(없으면 github):
 #     github(기본·지금) : schedule run 은 오늘과 똑같이 돈다
 #     cloudflare        : schedule run 은 오늘(KST) 정기 브리프(schedule·cf)를 이미 보냈으면 건너뛰고, 아니면 대신 보낸다
 #   Worker run 은 SCHEDULER 와 무관하게 오늘 정기 브리프가 이미 갔으면 건너뛴다(concurrency 그룹이 직렬화 → 하루 1통).
+#   "이미 갔음" = '브리프 전송 표식' 스텝 success(텔레그램 전송 성공 — 템플릿 고장으로 plain 폴백을 보내고 job 이 실패해도 보냄)
+#   또는 브리프 스텝 success. 전송 자체가 실패한 run 은 보낸 것이 아니라서 대비책이 다시 보낸다.
 #   사람의 수동 실행(preview·normal, source=manual)은 언제나 돌고 정기 실행으로 세지 않는다.
+#   ⚠️ 되돌릴 때 순서: Worker 크론 삭제(또는 DRY_RUN=1) → 15분 대기 → SCHEDULER 삭제. SCHEDULER 부터 지우면 그날 schedule
+#   브리프가 조회 없이 돌아 Worker 브리프(09:17)와 합쳐 2통이 된다(SCHEDULER 없음 = gh 조회 0회 = 지금과 똑같음을 지키려는 것).
 
 permissions:
   contents: read
@@ -92,6 +91,8 @@ jobs:
       STATE_DIR: .monitor-state
       # 예약 실행 주 경로: github(기본) | cloudflare — 스크립트(neon-usage.sh 등)는 읽기만 한다
       SCHEDULER: ${{ vars.SCHEDULER || 'github' }}
+      # full(DB 경유) 주기(시간, uptime-mode.sh 가 강제) — hb 가 '설계 DB체크 N회' 를 계산. 없으면 1(매시 = 13회, 지금과 같음)
+      FULL_EVERY_HOURS: ${{ vars.FULL_EVERY_HOURS || '1' }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -124,8 +125,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          FULL_EVERY_HOURS_IN: ${{ inputs.full_every_hours }}
-          DESIGN_FULL_VAR: ${{ vars.UPTIME_DESIGN_FULL }}
         run: |
           # 실패해도 브리프는 보낸다 — 값이 비면 브리프에 "확인 불가" 로 표시
           # "정기 실행" = schedule 이벤트 + Cloudflare Worker 의 dispatch(source=cf → run-name 'uptime · cf · …').
@@ -146,21 +145,29 @@ jobs:
             fi
             CONCL="${CC[$1]}"
           }
-          sched_mode="${SCHEDULER:-github}"
+          # SCHEDULER 해석은 schedule-gate.sh 와 같다(대소문자·공백 무시, 모르는 값 = github + 경고)
+          sched_mode="$(printf '%s' "${SCHEDULER:-github}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"; sched_bad=0
+          case "$sched_mode" in
+            ''|github) sched_mode=github ;; cloudflare) ;;
+            *) echo "::warning::repo 변수 SCHEDULER='${SCHEDULER}' 를 알 수 없음 — github 으로 취급"; sched_mode=github; sched_bad=1 ;;
+          esac
           # 최근 실행 목록 1회 조회(300건 ≈ 설계상 2일치) — 24h 실행 수·full 후보를 여기서 같이 뽑는다
           runs="$(gh run list --workflow uptime.yml --limit 300 --json databaseId,displayTitle,createdAt,event,conclusion 2>/dev/null || true)"
           since="$(date -u -d '-24 hours' +%s)"
           # 정기 실행 후보(최신순) TSV: id  event(schedule|cf)  createdAt  run결론  full의도(1|0)  24h안(1|0)
+          #   취소·기동 실패로 끝난 Worker run 은 체크를 안 했으므로 뺀다(진행 중 run 은 결론이 비어 포함)
           regular="$(jq -r --argjson s "$since" '.[]
+              | select(.event == "schedule" or ((.conclusion // "") | IN("cancelled", "startup_failure", "skipped") | not))
               | select(.event == "schedule" or (.event == "workflow_dispatch" and ((.displayTitle // "") | contains("· cf ·"))))
               | [.databaseId, (if .event == "schedule" then "schedule" else "cf" end), .createdAt, (.conclusion // ""),
                  (if ((.displayTitle // "") | endswith("· full")) then 1 else 0 end),
                  (if (.createdAt | fromdateiso8601) >= $s then 1 else 0 end)] | @tsv' <<< "$runs" 2>/dev/null | tr -d '\r' || true)"
-          last=""; runs24=0; full24=0; cf24=0; fb24=0
+          last=""; runs24=0; full24=0; cf24=0; fb24=0; cf_last=""
           while IFS=$'\t' read -r id ev created concl isfull in24; do
             [ -n "$id" ] || continue
             ran=1; ok=0
             if [ "$ev" = "cf" ]; then
+              [ -n "$cf_last" ] || cf_last="$created"
               if [ "$concl" = "success" ]; then ok=1; fi
             elif [ "$sched_mode" = "cloudflare" ]; then
               # 건너뛴 대비책 run 은 체크 스텝이 skipped — 실제 체크(success|failure)만 실행으로 센다
@@ -182,17 +189,29 @@ jobs:
             ls="$(gh run list --workflow uptime.yml --status success --event schedule --limit 1 --json createdAt -q '.[0].createdAt // ""' 2>/dev/null || true)"
             if [ -n "$ls" ] && { [ -z "$last" ] || [[ "$ls" > "$last" ]]; }; then last="$ls"; fi
           fi
-          if [ -z "$runs" ]; then runs24=""; full24=""; cf24=""; fb24=""; fi
-          echo "uptime.yml 마지막 정기 성공: ${last:-없음} (scheduler=${sched_mode}, 체크 스텝 조회 ${VERIFIED}건)"
-          { echo "last=${last}"; echo "cf24=${cf24}"; echo "fb24=${fb24}"; } >> "$GITHUB_OUTPUT"
-          # 설계상 하루 DB체크(full) 횟수: Worker 브리프면 그 FULL_EVERY_HOURS 로 계산(1→13·2→7·3→5·0→0), 아니면 변수 또는 13
-          fe="${FULL_EVERY_HOURS_IN:-}"; dfull=""
-          if [[ "$fe" =~ ^[0-9]+$ ]]; then
-            fe=$((10#$fe)); dfull=0
-            if [ "$fe" -gt 0 ]; then for h in $(seq 2 14); do if [ $(((h - 2) % fe)) -eq 0 ]; then dfull=$((dfull + 1)); fi; done; fi
-          elif [[ "${DESIGN_FULL_VAR:-}" =~ ^[0-9]+$ ]]; then dfull="$DESIGN_FULL_VAR"
+          if [ "$VERIFIED" -ge "$VERIFY_MAX" ]; then
+            echo "::notice::schedule run 체크 스텝 조회 상한 ${VERIFY_MAX}건 도달 — 그 밖의 오래된 schedule run 은 집계에서 뺌(표시값만 영향)"
           fi
-          echo "design_full=${dfull:-13}" >> "$GITHUB_OUTPUT"
+          # 예약 실행기(Worker) 멈춤 판정 — cloudflare 모드에서 최근 CF_STALE_MAX_MIN(60분) 안에 Worker run 이 없으면 1.
+          #   Worker 는 10분마다 보내므로 60분 = 6번 연속 빠짐. 토큰 만료·DRY_RUN 그대로·크론 삭제 등. github 모드·조회 실패면 빈 값.
+          cf_stale=""
+          if [ "$sched_mode" = "cloudflare" ] && [ -n "$runs" ]; then
+            cmax="${CF_STALE_MAX_MIN:-60}"; case "$cmax" in ''|*[!0-9]*) cmax=60 ;; esac
+            cf_stale=1
+            if [ -n "$cf_last" ] && [ $(( $(date -u +%s) - $(date -u -d "$cf_last" +%s 2>/dev/null || echo 0) )) -lt $((cmax * 60)) ]; then cf_stale=0; fi
+            [ "$cf_stale" = "0" ] || echo "::warning::SCHEDULER=cloudflare 인데 최근 ${cmax}분 안에 Worker run 없음(마지막 ${cf_last:-없음}) — GitHub schedule 대비책으로 동작 중"
+          fi
+          if [ -z "$runs" ]; then runs24=""; full24=""; cf24=""; fb24=""; cf_last=""; fi
+          echo "uptime.yml 마지막 정기 성공: ${last:-없음} (scheduler=${sched_mode}, 체크 스텝 조회 ${VERIFIED}건, Worker 마지막 ${cf_last:-없음}, 멈춤=${cf_stale:-해당 없음})"
+          { echo "last=${last}"; echo "cf24=${cf24}"; echo "fb24=${fb24}"; echo "cf_last=${cf_last}"; echo "cf_stale=${cf_stale}"
+            echo "scheduler=${sched_mode}"; echo "scheduler_bad=${sched_bad}"; } >> "$GITHUB_OUTPUT"
+          # 설계상 하루 DB체크(full) 횟수: repo 변수 FULL_EVERY_HOURS(uptime-mode.sh 와 같은 해석 — 정수 아니면 1)로 계산.
+          #   1→13 · 2→7 · 3→5 · 0→0 (KST 11~23시 중 (UTC시−2) % N == 0 인 시간 수)
+          fe="$(printf '%s' "${FULL_EVERY_HOURS:-}" | tr -d '[:space:]')"
+          if [[ "$fe" =~ ^[0-9]+$ ]]; then fe=$((10#$fe)); else fe=1; fi
+          dfull=0
+          if [ "$fe" -gt 0 ]; then for h in $(seq 2 14); do if [ $(((h - 2) % fe)) -eq 0 ]; then dfull=$((dfull + 1)); fi; done; fi
+          echo "design_full=${dfull}" >> "$GITHUB_OUTPUT"
           # DB 경유(full) 체크 heartbeat: full '의도' run(displayTitle '· full' — 강등돼도 이 제목) 중 'DB 경유(full) 실행 표식'
           # 스텝과 체크 스텝이 둘 다 success 인 run = 실제로 DB 체크를 한 run (스텝 이름은 uptime.yml 과 동기).
           #   full    = 그런 run 중 가장 최근의 체크 완료 시각
@@ -242,7 +261,9 @@ jobs:
           echo "last_commit=${lc}" >> "$GITHUB_OUTPUT"
 
       # ⚠️ 이 스텝 이름은 schedule-gate.sh(BRIEF_STEP)가 "오늘 정기 브리프를 이미 보냈는지" 문자열로 조회한다 — 바꾸지 말 것.
+      # 출력 sent=1 = 텔레그램 전송 성공(neon-usage.sh 가 남김) → 아래 '브리프 전송 표식' 스텝이 success 가 된다.
       - name: Neon 사용량 조회 + 텔레그램 브리프
+        id: brief
         if: steps.gate.outputs.run != '0'
         env:
           NEON_API_KEY: ${{ secrets.SIMPARTY_NEON_API_KEY }}
@@ -261,17 +282,28 @@ jobs:
           UPTIME_FULL_24H: ${{ steps.hb.outputs.full24 }}
           UPTIME_FULL_EXEC_24H: ${{ steps.hb.outputs.fullx24 }}
           UPTIME_INCIDENT: ${{ steps.hb.outputs.incident }}
-          # 설계상 하루 DB체크 횟수(Worker 의 FULL_EVERY_HOURS 에서 계산, 없으면 vars.UPTIME_DESIGN_FULL 또는 13 — 예전 기본값과 같음)
+          # 설계상 하루 DB체크 횟수(repo 변수 FULL_EVERY_HOURS 에서 계산, 없으면 13 — 예전 기본값과 같음)
           UPTIME_DESIGN_FULL: ${{ steps.hb.outputs.design_full || '13' }}
-          # 최근 24h 정기 실행 중 Worker(cf)·GitHub schedule(대비책) 각각의 수 — 템플릿이 쓰면 표시(지금은 참고값)
+          # 최근 24h 정기 실행 중 Worker(cf)·GitHub schedule(대비책) 각각의 수 — 템플릿이 쓰면 표시(참고값)
           UPTIME_CF_RUNS_24H: ${{ steps.hb.outputs.cf24 }}
           UPTIME_FALLBACK_RUNS_24H: ${{ steps.hb.outputs.fb24 }}
+          # 예약 실행기 상태 — cloudflare 모드에서 최근 60분 Worker run 없음 = UPTIME_CF_STALE 1(🟡 대상), 0 = 정상, 빈 값 = github 모드·확인 불가
+          #   UPTIME_CF_LAST = 마지막 Worker run 시각(ISO) · SCHEDULER_BAD 1 = SCHEDULER 값 오타(github 으로 취급 중)
+          UPTIME_CF_LAST: ${{ steps.hb.outputs.cf_last }}
+          UPTIME_CF_STALE: ${{ steps.hb.outputs.cf_stale }}
+          SCHEDULER_BAD: ${{ steps.hb.outputs.scheduler_bad }}
           HB_UPTIME_MAX_H: ${{ vars.HB_UPTIME_MAX_H || '6' }}
           SITE_FRESH_H: ${{ vars.SITE_FRESH_H || '3' }}
           HB_FULL_MAX_H: ${{ vars.HB_FULL_MAX_H || '36' }}
           # 정기(schedule) 실행엔 inputs 가 없어 normal
           BRIEF_MODE: ${{ inputs.mode || 'normal' }}
         run: bash .github/scripts/neon-usage.sh
+
+      # 하루 1통 판정용 표식 — 브리프가 실제로 텔레그램에 갔으면 success(템플릿 고장으로 job 이 실패로 끝나도). 전송 실패면 skipped →
+      # 대비책이 다시 보낸다. ⚠️ 이 이름은 schedule-gate.sh(SENT_STEP)가 문자열로 조회한다 — 바꾸지 말 것.
+      - name: 브리프 전송 표식
+        if: always() && steps.brief.outputs.sent == '1'
+        run: echo "sent=1 — 오늘 정기 브리프를 텔레그램으로 보냄 (schedule-gate.sh 가 하루 1통 판정에 사용)"
 
       # preview 는 판정 기준점을 덮지 않는다 (스크립트도 상태 파일을 쓰지 않지만, 복원된 파일을 새 키로 다시 저장하는 것도 막음)
       - name: 상태 저장
